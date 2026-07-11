@@ -1,0 +1,19 @@
+{
+  "runId": "example-kmeans-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": { "numPoints": 10000000, "numPartitions": 8, "seed": 42 }
+  },
+  "algorithm": {
+    "name": "kmeans",
+    "params": { "k": 10, "maxIter": 10, "distance": "euclidean"}
+  },
+
+  "evaluation": {
+    "metrics": ["silhouette", "clusterSizes", "noiseFraction"],
+    "sampleSize": 5000,
+    "seed": 42
+  }
+}
