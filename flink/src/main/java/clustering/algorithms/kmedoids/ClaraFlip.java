@@ -7,6 +7,8 @@ import clustering.core.FlinkJobs;
 import clustering.core.Model;
 import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -70,6 +72,8 @@ import java.util.Random;
  *  subtask-id order, and {@link PAM#fitLocal} is deterministic. Across different parallelism
  *  the point partition changes, so the drawn sample (and thus the result) can differ. */
 public class ClaraFlip implements Clusterer {
+
+    private static final Logger logger = LoggerFactory.getLogger(ClaraFlip.class);
 
     private static final TypeInformation<State> STATE_TYPE = TypeInformation.of(State.class);
     private static final TypeInformation<Partial> PARTIAL_TYPE = TypeInformation.of(Partial.class);
@@ -361,15 +365,14 @@ public class ClaraFlip implements Clusterer {
             }
 
             boolean stop = s.round >= numSamples;
-            System.out.printf(
-                "[ClaraFlip] round=%d/%d sampleGathered=%d pendingScored=%s pendingCost=%.3f bestCost=%.3f%s prevRound=%.0fms%n",
+            logger.debug("round={}/{} sampleGathered={} pendingScored={} pendingCost={} bestCost={}{} prevRound={}ms",
                 s.round, numSamples, sample.size(),
                 s.pendingMedoids != null ? "yes" : "no",
-                s.pendingMedoids != null ? pendingCost : Double.NaN,
-                next.bestCost == Double.MAX_VALUE ? Double.NaN : next.bestCost,
-                improved ? " (NEW BEST)" : "", roundMs);
+                String.format("%.3f", s.pendingMedoids != null ? pendingCost : Double.NaN),
+                String.format("%.3f", next.bestCost == Double.MAX_VALUE ? Double.NaN : next.bestCost),
+                improved ? " (NEW BEST)" : "", String.format("%.0f", roundMs));
             if (stop) {
-                System.out.println("[ClaraFlip] stop after " + numSamples + " samples, bestCost=" + next.bestCost);
+                logger.debug("stop after {} samples, bestCost={}", numSamples, next.bestCost);
             }
 
             Update u = new Update();

@@ -8,12 +8,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Root config for a single benchmark run. Java mirror of the Spark
- *  {@code clustering.benchmark.config.RunConfig}, parsed with Jackson and
- *  conforming to contract/run_config.schema.json.
- *
- *  Accepts both the neutral {@code engineConf} and the deprecated Spark alias
- *  {@code sparkConf}; {@link #effectiveEngineConf()} merges them. */
+
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class RunConfig {
 
@@ -45,11 +40,17 @@ public class RunConfig {
         return merged;
     }
 
+    /** Local-dev default output dir; the harness overrides it via the config's outputDir.
+     *  Single default, profile-independent — mirrors the Spark repo's RunConfig. */
+    private static final String DEFAULT_OUTPUT_DIR =
+        System.getProperty("user.dir", ".") + "/benchmark-results";
+
+    /** profile name -> ClusterProfile; absent -> local (mirrors Spark's getOrElse(LocalProfile)). */
     public ClusterProfile resolveProfile() {
-        return profile != null ? ClusterProfile.fromName(profile) : ClusterProfile.fromEnv();
+        return profile != null ? ClusterProfile.fromName(profile) : new ClusterProfile.LocalProfile();
     }
 
-    public String resolveOutputDir(ClusterProfile resolved) {
-        return outputDir != null ? outputDir : resolved.outputDir();
+    public String resolveOutputDir() {
+        return outputDir != null ? outputDir : DEFAULT_OUTPUT_DIR;
     }
 }

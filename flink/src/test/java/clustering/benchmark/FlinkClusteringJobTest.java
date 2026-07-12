@@ -2,7 +2,6 @@ package clustering.benchmark;
 
 import clustering.benchmark.config.ClusterProfile;
 import clustering.benchmark.config.RunConfig;
-import clustering.benchmark.framework.FlinkClusteringJob;
 import clustering.benchmark.metrics.RunResult;
 import org.junit.jupiter.api.Test;
 

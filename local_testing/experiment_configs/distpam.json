@@ -1,0 +1,31 @@
+{
+  "runId": "example-distpam-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": {
+      "numPoints": 50000,
+      "numPartitions": 12,
+      "seed": 42
+    }
+  },
+  "algorithm": {
+    "name": "distpam",
+    "params": {
+      "k": 5,
+      "maxIter": 50,
+      "distance": "euclidean"
+    }
+  },
+  "_note": "Distributed FastPAM (FLIP-176): one Flink job, O(n^2) work split across partitions/machines, no O(n^2) matrix. Candidate coords C (O(n)) are replicated per subtask. Scales with parallelism; on a cluster raise numPoints/numPartitions.",
+  "evaluation": {
+    "metrics": [
+      "silhouette",
+      "clusterSizes",
+      "noiseFraction"
+    ],
+    "sampleSize": 5000,
+    "seed": 42
+  }
+}

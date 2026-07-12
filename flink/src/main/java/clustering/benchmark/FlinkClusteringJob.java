@@ -1,13 +1,15 @@
-package clustering.benchmark.framework;
+package clustering.benchmark;
 
 import clustering.benchmark.config.ClusterProfile;
 import clustering.benchmark.config.Params;
 import clustering.benchmark.config.RunConfig;
 import clustering.benchmark.datasource.DataSource;
-import clustering.benchmark.evaluation.LabelCount;
+import clustering.benchmark.evaluation.EvaluationResult;
+import clustering.benchmark.evaluation.EvaluationRunner;
 import clustering.benchmark.metrics.BenchmarkListener;
 import clustering.benchmark.metrics.RunResult;
 import clustering.benchmark.registry.AlgorithmRegistry;
+import clustering.benchmark.registry.DataSourceRegistry;
 import clustering.benchmark.registry.DistanceRegistry;
 import clustering.core.Clusterer;
 import clustering.core.Datasets;
@@ -16,21 +18,20 @@ import clustering.core.Model;
 import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
 import clustering.distance.EuclideanDistance;
-import clustering.evaluation.SilhouetteEvaluator;
 import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.api.common.functions.MapFunction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.time.Instant;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
-/** Flink-backed {@link ClusteringJob}.
+/** Runs one clustering benchmark on Flink. Java mirror of the Spark repo's
+ *  {@code clustering.benchmark.SparkClusteringJob} (no shared interface — each engine
+ *  repo owns its single job class).
  *
  *  Pipeline: count (load) -> fit (distributed, see the chosen KMeans impl) ->
  *  evaluate (distributed cluster sizes + driver-side sampled silhouette). Each
@@ -41,7 +42,12 @@ import java.util.Map;
  *  fresh independent env. On a real cluster, multi-job-per-submission via
  *  getExecutionEnvironment() must be validated; impl=mliter runs fit as a single
  *  job and is the cluster-friendly path. */
-public final class FlinkClusteringJob implements ClusteringJob {
+public final class FlinkClusteringJob {
+
+    private static final Logger logger = LoggerFactory.getLogger(FlinkClusteringJob.class);
+
+    /** Engine tag written into every RunResult (mirrors Spark's {@code val framework = "spark"}). */
+    public final String framework = "flink";
 
     /** Reporter flush period (also the {@code metrics.reporter.file.interval} value). */
     private static final String REPORTER_INTERVAL = "1 SECONDS";
@@ -51,17 +57,11 @@ public final class FlinkClusteringJob implements ClusteringJob {
      *  aggregates. There is no cross-process flush barrier, so this is the safety margin. */
     private static final long METRICS_SETTLE_MS = 2_000L;
 
-    @Override
-    public String framework() {
-        return "flink";
-    }
-
-    @Override
     public RunResult run(RunConfig config, ClusterProfile profile) {
         Instant startedAt = Instant.now();
         long t0Total = System.nanoTime();
         final int parallelism = Params.intParam(config.dataset.params, "numPartitions");
-        log("starting runId=" + config.runId + " algorithm=" + config.algorithm.name
+        logger.info("starting runId=" + config.runId + " algorithm=" + config.algorithm.name
             + " dataset=" + config.dataset.type + " profile=" + profile.name()
             + " parallelism=" + parallelism);
 
@@ -106,59 +106,33 @@ public final class FlinkClusteringJob implements ClusteringJob {
                 return e;
             };
 
-            DataSource datasource = DataSource.create(config.dataset);
+            DataSource datasource = DataSourceRegistry.create(config.dataset);
             PointSource source = datasource::load;
             Clusterer clusterer = AlgorithmRegistry.create(config.algorithm);
             DistanceMetric evalDistance = evaluationDistance(config);
             Integer nFeatures = parseIntOrNull(datasource.metadata().get("nFeatures"));
 
             // --- load (distributed count) -------------------------------------
-            log("loading dataset " + datasource.name());
+            logger.info("loading dataset " + datasource.name());
             long t0Load = System.nanoTime();
             long nRows = Datasets.count(source, envs);
             long t1Load = System.nanoTime();
-            log("loaded nRows=" + nRows + " in " + ms(t0Load, t1Load) + "ms");
+            logger.info("loaded nRows=" + nRows + " in " + ms(t0Load, t1Load) + "ms");
 
             // --- fit ----------------------------------------------------------
-            log("fitting " + config.algorithm.name);
+            logger.info("fitting " + config.algorithm.name);
             long t0Fit = System.nanoTime();
             Model model = clusterer.fit(source, envs, parallelism);
             long t1Fit = System.nanoTime();
-            log("fitted in " + ms(t0Fit, t1Fit) + "ms");
+            logger.info("fitted in " + ms(t0Fit, t1Fit) + "ms");
 
-            // --- evaluate (distributed sizes + sampled silhouette) ------------
-            // Only the metrics named in EvaluationSpec.metrics are computed; the rest stay
-            // null and are omitted from the result (mirrors Spark's EvaluationRunner).
-            // clusterSizes/noiseFraction/nClusters all derive from one assignment scan, so
-            // run it once iff at least one of them is requested.
+            // --- evaluate (see EvaluationRunner; only the requested metrics are computed) ---
             long t0Eval = System.nanoTime();
-            boolean wantSizes = config.evaluation.wants("clusterSizes");
-            boolean wantNoise = config.evaluation.wants("noiseFraction");
-            boolean wantNClusters = config.evaluation.wants("nClusters");
-            Map<String, Long> sizes = (wantSizes || wantNoise || wantNClusters)
-                ? computeSizes(model, source, envs) : null;
-            Double noiseFraction = null;
-            if (wantNoise) {
-                long noise = sizes.getOrDefault("-1", 0L);
-                noiseFraction = nRows == 0 ? 0.0 : (double) noise / nRows;
-            }
-            Integer nClusters = null;
-            if (wantNClusters) {
-                int n = 0;
-                for (String key : sizes.keySet()) {
-                    if (Integer.parseInt(key) >= 0) n++;
-                }
-                nClusters = n;
-            }
-            Double silhouette = null;
-            if (config.evaluation.wants("silhouette")) {
-                long cap = config.evaluation.sampleSize != null ? config.evaluation.sampleSize : 10_000L;
-                List<double[]> sample = Datasets.collectHead(source, envs, cap);
-                silhouette = new SilhouetteEvaluator(evalDistance).evaluate(sample, model.labels(sample));
-            }
+            EvaluationResult eval = new EvaluationRunner(evalDistance)
+                .run(model, source, envs, config.evaluation, nRows);
             long t1Eval = System.nanoTime();
-            log("evaluated nClusters=" + nClusters + " silhouette=" + silhouette
-                + " noiseFraction=" + noiseFraction + " in " + ms(t0Eval, t1Eval) + "ms");
+            logger.info("evaluated nClusters=" + eval.nClusters + " silhouette=" + eval.silhouette
+                + " noiseFraction=" + eval.noiseFraction + " in " + ms(t0Eval, t1Eval) + "ms");
 
             // No cross-process flush barrier: on a real cluster wait one reporter tick (+margin)
             // after the last job so every TaskManager flushes its final values to the shared file
@@ -177,13 +151,13 @@ public final class FlinkClusteringJob implements ClusteringJob {
             r.evalDurationMs = ms(t0Eval, t1Eval);
             r.totalDurationMs = ms(t0Total, System.nanoTime());
             r.avgCpuCoresBusy = RunResult.avgCpuCoresBusy(r.executorCpuTimeNs, r.totalDurationMs);
-            r.nClusters = nClusters;
-            r.noiseFraction = noiseFraction;
-            r.silhouette = silhouette;
-            r.clusterSizes = wantSizes ? sizes : null;
+            r.nClusters = eval.nClusters;
+            r.noiseFraction = eval.noiseFraction;
+            r.silhouette = eval.silhouette;
+            r.clusterSizes = eval.clusterSizes;
             return r;
         } catch (Throwable t) {
-            log("run failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            logger.error("run failed: {}: {}", t.getClass().getSimpleName(), t.getMessage(), t);
             RunResult r = baseResult(config, profile, startedAt, Instant.now(), "failed",
                 t.getClass().getSimpleName() + ": " + t.getMessage(), listener.snapshot());
             r.dataset = config.dataset.type;
@@ -193,41 +167,6 @@ public final class FlinkClusteringJob implements ClusteringJob {
             r.totalDurationMs = ms(t0Total, System.nanoTime());
             // eval fields stay null on a failed run -> omitted (matches Spark's empty eval).
             return r;
-        }
-    }
-
-    /** Distributed cluster sizes: label every point, count per label. */
-    private Map<String, Long> computeSizes(Model model, PointSource source, EnvFactory envs) {
-        StreamExecutionEnvironment env = envs.newEnv();
-        DataStream<LabelCount> counts = source.create(env)
-            .map(new LabelMap(model)).returns(LabelCount.class)
-            .keyBy(c -> c.label)
-            .reduce((a, b) -> {
-                LabelCount r = new LabelCount();
-                r.label = a.label;
-                r.count = a.count + b.count;
-                return r;
-            });
-        Map<String, Long> sizes = new LinkedHashMap<>();
-        for (LabelCount c : clustering.core.FlinkJobs.collectAll(counts, "cluster-sizes")) {
-            sizes.put(Integer.toString(c.label), c.count);
-        }
-        return sizes;
-    }
-
-    static final class LabelMap implements MapFunction<double[], LabelCount> {
-        private final Model model;
-
-        LabelMap(Model model) {
-            this.model = model;
-        }
-
-        @Override
-        public LabelCount map(double[] p) {
-            LabelCount c = new LabelCount();
-            c.label = model.predict(p);
-            c.count = 1L;
-            return c;
         }
     }
 
@@ -241,7 +180,7 @@ public final class FlinkClusteringJob implements ClusteringJob {
                                  BenchmarkListener.Snapshot snap) {
         RunResult r = new RunResult();
         r.runId = config.runId;
-        r.framework = framework();
+        r.framework = framework;
         r.profile = profile.name();
         r.startedAtIso = startedAt.toString();
         r.finishedAtIso = finishedAt.toString();
@@ -289,15 +228,11 @@ public final class FlinkClusteringJob implements ClusteringJob {
 
     /** Wait for reporters to flush final metrics to the shared file (see {@link #METRICS_SETTLE_MS}). */
     private static void settleForMetrics() {
-        log("settling " + METRICS_SETTLE_MS + "ms for metric reporters to flush");
+        logger.info("settling " + METRICS_SETTLE_MS + "ms for metric reporters to flush");
         try {
             Thread.sleep(METRICS_SETTLE_MS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    private static void log(String msg) {
-        System.out.println("[FlinkClusteringJob] " + msg);
     }
 }

@@ -51,9 +51,9 @@ flowchart TD
   subgraph JOB ["1. Wykonanie zadania klasteryzacji (FlinkClusteringJob)"]
     direction TB
 
-    subgraph REG ["Odwzorowanie parametrów na obiekty (JobManager / driver)"]
+    subgraph REG ["Odwzorowanie parametrów na obiekty (Flink JobManager)"]
       direction TB
-      DSR["Wybór źródła danych<br/>(DataSource.create)"]
+      DSR["Wybór źródła danych<br/>(DataSourceRegistry)"]
       ALGOR["Wybór algorytmu<br/>(AlgorithmRegistry)"]
       DIST["Wybór miary odległości<br/>(DistanceRegistry)"]
 
@@ -62,7 +62,7 @@ flowchart TD
 
     subgraph CLUSTER ["Rozproszone obliczenia (Flink TaskManagers)"]
       direction LR
-      LOAD["Ładowanie danych<br/>(DataSource.load)"] --> FIT["Właściwa klasteryzacja<br/>(Clusterer.fit)"] --> EVAL["Ewaluacja wyników<br/>(cluster sizes + silhouette)"]
+      LOAD["Ładowanie danych<br/>(DataSource.load)"] --> FIT["Właściwa klasteryzacja<br/>(Clusterer.fit)"] --> EVAL["Ewaluacja wyników<br/>(EvaluationRunner.run)"]
     end
 
     REG -->|"przekazanie gotowych instancji"| LOAD
@@ -93,14 +93,14 @@ flowchart TD
   RES --> OUT[/"Plik wynikowy<br/>&lt;runId&gt;.json (ok | failed)"/]
 ```
 
-The pipeline is assembled from config strings by two registries plus a data-source
-factory, so adding an algorithm, data source, or metric is one factory entry — the
-runner never changes:
+The pipeline is assembled from config strings by three registries (all sharing a common
+`NamedRegistry` for case-insensitive lookup + uniform "unknown X" errors), so adding an
+algorithm, data source, or metric is one factory entry — the runner never changes:
 
 - **`AlgorithmRegistry`** — `config.algorithm.name` → `Clusterer` factory
   (kmeans / pam / fastpam / distpam / distfastpam / clara / claraflip).
-- **`DataSource.create`** — `config.dataset.type` → `DataSource` (synthetic).
-- **`DistanceRegistry`** — `params.distance` → `DistanceMetric` (Euclidean).
+- **`DataSourceRegistry`** — `config.dataset.type` → `DataSource` factory (synthetic; Parquet planned).
+- **`DistanceRegistry`** — `params.distance` → `DistanceMetric` (Euclidean / Manhattan / Cosine).
 
 Core abstractions (`clustering.core`) keep algorithms uniform:
 
@@ -111,8 +111,9 @@ Core abstractions (`clustering.core`) keep algorithms uniform:
   point to a cluster id. Batch-only by design.
 
 `FlinkClusteringJob` wires these together for one run: load the `DataSource`, `fit` the
-`Clusterer`, evaluate the `Model` (distributed cluster sizes + sampled silhouette), and
-collect metrics into a `RunResult`.
+`Clusterer`, evaluate the `Model` via `EvaluationRunner` (distributed cluster sizes +
+sampled silhouette; only the metrics named in `EvaluationSpec` are computed), and collect
+metrics into a `RunResult`.
 
 ### KMeans on the Flink ML iteration framework
 
@@ -148,7 +149,7 @@ training is ONE Flink job (cluster-friendly).
 │   ├── src/main/java/clustering/
 │   │   ├── core/                 # Clusterer / Model abstractions, EnvFactory, PointSource
 │   │   ├── algorithms/           # clustering algorithms implementations
-│   │   ├── distance/             # Euclidean metric
+│   │   ├── distance/             # Euclidean / Manhattan / Cosine metrics
 │   │   ├── evaluation/           # clustering metrics (silhouette)
 │   │   ├── metrics/              # custom FileMetricReporter (engine metrics)
 │   │   └── benchmark/            # runner (--config) + config, datasource, evaluation, metrics, registry
@@ -160,7 +161,7 @@ training is ONE Flink job (cluster-friendly).
 
 ## Requirements
 
-* JDK 11 (build with JDK 17 locally; Flink 1.17 does not support JDK 21)
+* JDK 11
 * Maven (with `maven-shade-plugin`)
 * Apache Flink 1.17.1 + Flink ML 2.3.0
 

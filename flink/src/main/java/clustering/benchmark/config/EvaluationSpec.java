@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.Arrays;
 import java.util.List;
 
-/** {@code evaluation} block: which metrics, optional subsample, seed. */
+
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class EvaluationSpec {
     public List<String> metrics = Arrays.asList("silhouette", "nClusters", "clusterSizes", "noiseFraction");

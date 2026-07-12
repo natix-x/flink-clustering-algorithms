@@ -1,0 +1,21 @@
+{
+  "runId": "example-pam-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": { "numPoints": 2000, "numPartitions": 4, "seed": 42 }
+  },
+  "algorithm": {
+    "name": "pam",
+    "params": { "k": 5, "maxIter": 50, "distance": "euclidean" }
+  },
+
+  "_note": "PAM is driver-local O(n^2) memory + O(k*(n-k)^2) per swap. Keep numPoints small (<= ~10000).",
+
+  "evaluation": {
+    "metrics": ["silhouette", "clusterSizes", "noiseFraction"],
+    "sampleSize": 2000,
+    "seed": 42
+  }
+}

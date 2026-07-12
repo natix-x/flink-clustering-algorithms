@@ -7,6 +7,8 @@ import org.apache.flink.metrics.MetricConfig;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.reporter.MetricReporter;
 import org.apache.flink.metrics.reporter.Scheduled;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Writer;
@@ -54,6 +56,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *  metrics.reporter.file.interval: 1 SECONDS
  *  </pre> */
 public class FileMetricReporter implements MetricReporter, Scheduled {
+
+    private static final Logger logger = LoggerFactory.getLogger(FileMetricReporter.class);
 
     /** Identifier fragments we keep (matched against the FULL metric identifier). */
     private static final String[] KEEP = {
@@ -117,10 +121,7 @@ public class FileMetricReporter implements MetricReporter, Scheduled {
                 peak.merge(e.getKey(), v, Math::max);
             }
         }
-        if (System.getProperty("clustering.metrics.debug") != null) {
-            System.out.println("PROBE report path=" + path.getFileName()
-                + " live=" + live.size() + " peak=" + peak.size());
-        }
+        logger.debug("PROBE report path={} live={} peak={}", path.getFileName(), live.size(), peak.size());
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, Long> e : peak.entrySet()) {
             sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');

@@ -7,6 +7,8 @@ import clustering.core.FlinkJobs;
 import clustering.core.Model;
 import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -58,6 +60,8 @@ import java.util.Random;
  *  The {@code Update} feeds two streams: the centroids feedback, and the termination
  *  criteria (a "continue" token unless converged / maxIter reached). */
 public class FlinkMLKMeans implements Clusterer {
+
+    private static final Logger logger = LoggerFactory.getLogger(FlinkMLKMeans.class);
 
     private static final TypeInformation<double[][]> CENTROIDS_TYPE =
         Types.OBJECT_ARRAY(PrimitiveArrayTypeInfo.DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO);
@@ -279,8 +283,7 @@ public class FlinkMLKMeans implements Clusterer {
             update.centroids = next;
             update.stop = maxMove < eps || epoch >= maxIter - 1;
             if (update.stop) {
-                System.out.println("[FlinkMLKMeans] stop at round=" + epoch
-                    + " (maxMove=" + maxMove + ", eps=" + eps + ", maxIter=" + maxIter + ")");
+                logger.debug("stop at round={} (maxMove={}, eps={}, maxIter={})", epoch, maxMove, eps, maxIter);
             }
             out.collect(update);
             counts = null;

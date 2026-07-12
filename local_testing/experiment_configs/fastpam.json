@@ -1,0 +1,21 @@
+{
+  "runId": "example-fastpam-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": { "numPoints": 5000, "numPartitions": 32, "seed": 42 }
+  },
+  "algorithm": {
+    "name": "distfastpam",
+    "params": { "k": 5, "maxIter": 50, "distance": "euclidean" }
+  },
+
+  "_note": "FastPAM is driver-local O(n^2) memory, O(k*n^2) per swap. Faster than PAM but still single-node; keep numPoints small.",
+
+  "evaluation": {
+    "metrics": ["silhouette", "clusterSizes", "noiseFraction"],
+    "sampleSize": 4000,
+    "seed": 42
+  }
+}

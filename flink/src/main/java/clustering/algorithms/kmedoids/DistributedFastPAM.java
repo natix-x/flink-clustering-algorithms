@@ -7,6 +7,8 @@ import clustering.core.FlinkJobs;
 import clustering.core.Model;
 import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -74,6 +76,8 @@ import java.util.Optional;
  *  different parallelism the j-partition changes, so floating-point sum order differs and
  *  near-tie moves may resolve differently — unavoidable for a distributed sum. */
 public class DistributedFastPAM implements Clusterer {
+
+    private static final Logger logger = LoggerFactory.getLogger(DistributedFastPAM.class);
 
     private static final TypeInformation<State> STATE_TYPE = TypeInformation.of(State.class);
     private static final TypeInformation<Partial> PARTIAL_TYPE = TypeInformation.of(Partial.class);
@@ -352,9 +356,8 @@ public class DistributedFastPAM implements Clusterer {
             buffer.sort(Comparator.comparingInt(p -> p.subtask));
             State s = buffer.get(0).state;
             String phase = s.numSelected < k ? "BUILD" : "SWAP";
-            System.out.printf(
-                "[DistributedFastPAM] epoch=%d phase=%s numSelected=%d/%d swapRounds=%d/%d partials=%d prevRound=%.0fms%n",
-                epoch, phase, s.numSelected, k, s.swapRounds, maxIter, buffer.size(), roundMs);
+            logger.debug("epoch={} phase={} numSelected={}/{} swapRounds={}/{} partials={} prevRound={}ms",
+                epoch, phase, s.numSelected, k, s.swapRounds, maxIter, buffer.size(), String.format("%.0f", roundMs));
 
             int len = buffer.get(0).data.length;
             double[] sum = new double[len];
@@ -380,8 +383,8 @@ public class DistributedFastPAM implements Clusterer {
                 next.medoids[s.numSelected] = idx;
                 next.numSelected = s.numSelected + 1;
                 stop = false; // keep going: more BUILD steps, then SWAP
-                System.out.println("[DistributedFastPAM]   BUILD picked medoid #" + s.numSelected
-                    + " = point[" + idx + "]  (now " + next.numSelected + "/" + k + " selected)");
+                logger.debug("  BUILD picked medoid #{} = point[{}]  (now {}/{} selected)",
+                    s.numSelected, idx, next.numSelected, k);
             } else {
                 // SWAP: best FastPAM1 move (ascending h, then ascending i, strict improvement).
                 boolean[] isMedoid = new boolean[n];
@@ -412,12 +415,11 @@ public class DistributedFastPAM implements Clusterer {
                     next.medoids[bestI] = bestH;
                 }
                 stop = !applied || next.swapRounds >= maxIter;
-                System.out.println("[DistributedFastPAM]   SWAP round " + next.swapRounds + "/" + maxIter
-                    + (applied ? "  swap medoid[" + bestI + "] <- point[" + bestH + "]" : "  no improving swap")
-                    + "  bestDelta=" + bestDelta);
+                logger.debug("  SWAP round {}/{}{}  bestDelta={}", next.swapRounds, maxIter,
+                    applied ? "  swap medoid[" + bestI + "] <- point[" + bestH + "]" : "  no improving swap",
+                    bestDelta);
                 if (stop) {
-                    System.out.println("[DistributedFastPAM] stop at swapRound=" + next.swapRounds
-                        + " (bestDelta=" + bestDelta + ", maxIter=" + maxIter + ")");
+                    logger.debug("stop at swapRound={} (bestDelta={}, maxIter={})", next.swapRounds, bestDelta, maxIter);
                 }
             }
 

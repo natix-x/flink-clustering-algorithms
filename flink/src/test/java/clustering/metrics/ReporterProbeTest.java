@@ -40,9 +40,6 @@ class ReporterProbeTest {
         Thread.sleep(1500);  // let report() ticks fire
 
         BenchmarkListener.Snapshot s = MetricsFile.read();
-        System.out.println("PROBE taskCount=" + s.taskCount + " inputBytes=" + s.inputBytes
-            + " cpuNs=" + s.executorCpuTimeNs + " heap=" + s.peakExecutorMemoryBytes
-            + " gcMs=" + s.jvmGcTimeMs);
         assertTrue(s.taskCount > 0, "expected some task instances");
         assertTrue(s.peakExecutorMemoryBytes > 0, "expected TM heap metric");
     }

@@ -2,9 +2,7 @@ package clustering.benchmark.config;
 
 import java.util.Map;
 
-/** Typed access to the free-form {@code params} maps (Jackson decodes JSON
- *  numbers as Integer/Long/Double). Mirrors the param helpers in the Spark
- *  registries. */
+
 public final class Params {
 
     private Params() {}

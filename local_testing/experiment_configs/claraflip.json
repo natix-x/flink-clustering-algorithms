@@ -1,0 +1,33 @@
+{
+  "runId": "example-claraflip-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": {
+      "numPoints": 5000000,
+      "numPartitions": 12,
+      "seed": 42
+    }
+  },
+  "algorithm": {
+    "name": "claraflip",
+    "params": {
+      "k": 5,
+      "numSamples": 5,
+      "sampleSize": 1000,
+      "maxIter": 100,
+      "distance": "euclidean"
+    }
+  },
+  "_note": "Distributed FastPAM (FLIP-176): one Flink job, O(n^2) work split across partitions/machines, no O(n^2) matrix. Candidate coords C (O(n)) are replicated per subtask. Scales with parallelism; on a cluster raise numPoints/numPartitions.",
+  "evaluation": {
+    "metrics": [
+      "silhouette",
+      "clusterSizes",
+      "noiseFraction"
+    ],
+    "sampleSize": 5000,
+    "seed": 42
+  }
+}
