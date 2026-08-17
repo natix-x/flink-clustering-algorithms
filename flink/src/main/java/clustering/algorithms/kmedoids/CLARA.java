@@ -1,11 +1,13 @@
 package clustering.algorithms.kmedoids;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
 import clustering.core.FlinkJobs;
 import clustering.core.Model;
 import clustering.core.PointSource;
+import clustering.core.Points;
 import clustering.distance.DistanceMetric;
 import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.typeinfo.Types;
@@ -78,10 +80,9 @@ public class CLARA implements Clusterer {
      *  sample), collects up to {@code sampleSize} to the driver. */
     private double[][] collectSample(PointSource source, EnvFactory envs, double fraction, int sampleIdx) {
         StreamExecutionEnvironment env = envs.newEnv();
-        DataStream<double[]> sampled = source.create(env)
+        DataStream<DenseVector> sampled = source.create(env)
             .filter(new SampleFilter(fraction, sampleIdx));
-        List<double[]> out = FlinkJobs.collectUpTo(sampled, "clara-sample-" + sampleIdx, sampleSize);
-        return out.toArray(new double[0][]);
+        return Points.toArray(FlinkJobs.collectUpTo(sampled, "clara-sample-" + sampleIdx, sampleSize));
     }
 
     /** One distributed Flink job: total assignment cost (sum over all points of the
@@ -97,7 +98,7 @@ public class CLARA implements Clusterer {
 
     /** Seeded Bernoulli sample filter. Each subtask seeds its RNG from the sample index
      *  and its subtask id so samples are repeatable for a given parallelism. */
-    private static final class SampleFilter extends RichFilterFunction<double[]> {
+    private static final class SampleFilter extends RichFilterFunction<DenseVector> {
         private final double fraction;
         private final int sampleIdx;
         private transient Random rng;
@@ -114,14 +115,14 @@ public class CLARA implements Clusterer {
         }
 
         @Override
-        public boolean filter(double[] value) {
+        public boolean filter(DenseVector value) {
             return rng.nextDouble() < fraction;
         }
     }
 
     /** Maps a point to its distance to the nearest medoid. */
     private static final class NearestMedoidDistance
-            implements org.apache.flink.api.common.functions.MapFunction<double[], Double> {
+            implements org.apache.flink.api.common.functions.MapFunction<DenseVector, Double> {
         private final double[][] medoids;
         private final DistanceMetric distance;
 
@@ -131,10 +132,11 @@ public class CLARA implements Clusterer {
         }
 
         @Override
-        public Double map(double[] features) {
+        public Double map(DenseVector features) {
+            double[] point = features.values;
             double min = Double.MAX_VALUE;
             for (double[] medoid : medoids) {
-                double d = distance.compute(features, medoid);
+                double d = distance.compute(point, medoid);
                 if (d < min) {
                     min = d;
                 }

@@ -1,0 +1,26 @@
+{
+  "runId": "example-dbscanpp-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": { "numPoints": 200000, "numPartitions": 8, "seed": 42 }
+  },
+  "algorithm": {
+    "name": "dbscanpp",
+    "params": {
+      "eps": 2.0,
+      "minPts": 10,
+      "coreSampleFraction": 0.01,
+      "sampling": "uniform",
+      "chunkSize": 2000,
+      "distance": "euclidean",
+      "seed": 42
+    }
+  },
+  "evaluation": {
+    "metrics": ["silhouette", "nClusters", "clusterSizes", "noiseFraction"],
+    "sampleSize": 5000,
+    "seed": 42
+  }
+}

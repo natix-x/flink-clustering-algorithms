@@ -10,14 +10,12 @@ import clustering.benchmark.metrics.BenchmarkListener;
 import clustering.benchmark.metrics.RunResult;
 import clustering.benchmark.registry.AlgorithmRegistry;
 import clustering.benchmark.registry.DataSourceRegistry;
-import clustering.benchmark.registry.DistanceRegistry;
 import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
 import clustering.core.Model;
 import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
-import clustering.distance.EuclideanDistance;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,15 +31,15 @@ import java.util.Map;
  *  {@code clustering.benchmark.SparkClusteringJob} (no shared interface — each engine
  *  repo owns its single job class).
  *
- *  Pipeline: count (load) -> fit (distributed, see the chosen KMeans impl) ->
+ *  Pipeline: count (load) -> fit (distributed, see the chosen algorithm) ->
  *  evaluate (distributed cluster sizes + driver-side sampled silhouette). Each
  *  Flink action runs on a fresh env from the factory.
  *
- *  CLUSTER CAVEAT: this program issues several Flink jobs per run (count, the
- *  per-iteration jobs of impl=jobiter, sizes). On the local MiniCluster each is a
- *  fresh independent env. On a real cluster, multi-job-per-submission via
- *  getExecutionEnvironment() must be validated; impl=mliter runs fit as a single
- *  job and is the cluster-friendly path. */
+ *  CLUSTER CAVEAT: this program issues several Flink jobs per run (count, fit, the sampling
+ *  jobs some algorithms need, sizes). On the local MiniCluster each is a fresh independent
+ *  env. On a real cluster, multi-job-per-submission via getExecutionEnvironment() must be
+ *  validated; every iterative algorithm here runs its fit as a SINGLE job (FLIP-176), which
+ *  is the cluster-friendly path. */
 public final class FlinkClusteringJob {
 
     private static final Logger logger = LoggerFactory.getLogger(FlinkClusteringJob.class);
@@ -108,8 +106,11 @@ public final class FlinkClusteringJob {
 
             DataSource datasource = DataSourceRegistry.create(config.dataset);
             PointSource source = datasource::load;
-            Clusterer clusterer = AlgorithmRegistry.create(config.algorithm);
-            DistanceMetric evalDistance = evaluationDistance(config);
+            AlgorithmRegistry.Built built = AlgorithmRegistry.create(config.algorithm);
+            Clusterer clusterer = built.clusterer;
+            // The metric the clusterer actually ran with — for the k-means family that is the
+            // one implied by `geometry`, not a config `distance` field (mirrors Spark's Built).
+            DistanceMetric evalDistance = built.distance;
             Integer nFeatures = parseIntOrNull(datasource.metadata().get("nFeatures"));
 
             // --- load (distributed count) -------------------------------------
@@ -168,11 +169,6 @@ public final class FlinkClusteringJob {
             // eval fields stay null on a failed run -> omitted (matches Spark's empty eval).
             return r;
         }
-    }
-
-    private DistanceMetric evaluationDistance(RunConfig config) {
-        Object d = config.algorithm.params.get("distance");
-        return d == null ? EuclideanDistance.INSTANCE : DistanceRegistry.get(d.toString());
     }
 
     private RunResult baseResult(RunConfig config, ClusterProfile profile, Instant startedAt,

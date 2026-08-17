@@ -1,5 +1,6 @@
 package clustering.algorithms.kmedoids;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
@@ -108,7 +109,7 @@ public class ClaraFlip implements Clusterer {
 
         DataStream<State> initState =
             env.fromCollection(java.util.Collections.singletonList(State.initial()), STATE_TYPE);
-        DataStream<double[]> points = source.create(env);
+        DataStream<DenseVector> points = source.create(env);
 
         DataStreamList result = Iterations.iterateBoundedStreamsUntilTermination(
             DataStreamList.of(initState),
@@ -147,7 +148,7 @@ public class ClaraFlip implements Clusterer {
         @Override
         public IterationBodyResult process(DataStreamList variableStreams, DataStreamList dataStreams) {
             DataStream<State> state = variableStreams.get(0);
-            DataStream<double[]> points = dataStreams.get(0);
+            DataStream<DenseVector> points = dataStreams.get(0);
 
             DataStream<Partial> partials = points
                 .connect(state.broadcast())
@@ -181,7 +182,7 @@ public class ClaraFlip implements Clusterer {
      *  ALL its local points. Emits one {@link Partial}. */
     private static final class SampleAndCostFold
             extends AbstractStreamOperator<Partial>
-            implements TwoInputStreamOperator<double[], State, Partial>,
+            implements TwoInputStreamOperator<DenseVector, State, Partial>,
                        IterationListener<Partial> {
 
         private final double fraction;
@@ -216,8 +217,9 @@ public class ClaraFlip implements Clusterer {
         }
 
         @Override
-        public void processElement1(StreamRecord<double[]> record) throws Exception {
-            points.add(record.getValue());
+        public void processElement1(StreamRecord<DenseVector> record) throws Exception {
+            // Unwrap at the boundary: cache, state serializer and the scan all use the raw array.
+            points.add(record.getValue().values);
         }
 
         @Override

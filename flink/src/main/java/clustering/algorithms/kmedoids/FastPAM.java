@@ -4,6 +4,7 @@ import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
 import clustering.core.Model;
+import clustering.core.Points;
 import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
 
@@ -34,8 +35,7 @@ public class FastPAM implements Clusterer {
     public Model fit(PointSource source, EnvFactory envs, int parallelism) {
         // Collect the full dataset to the driver (parallelism 1, deterministic order).
         // This implementation assumes the dataset fits on a single machine.
-        List<double[]> collected = Datasets.collectAll(source, envs);
-        return fitLocal(collected.toArray(new double[0][]));
+        return fitLocal(Points.toArray(Datasets.collectAll(source, envs)));
     }
 
     /** Local entry point — no Flink overhead. All computation happens on the driver. */

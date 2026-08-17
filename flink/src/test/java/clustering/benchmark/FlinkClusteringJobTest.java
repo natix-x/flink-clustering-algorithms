@@ -44,6 +44,53 @@ class FlinkClusteringJobTest {
         RunResult.writeToDir(r, "target/contract-check");
     }
 
+    private static final String BISECTING_JSON =
+        "{"
+        + "\"runId\":\"test-bisectingkmeans-synth\","
+        + "\"profile\":\"local\","
+        + "\"dataset\":{\"type\":\"synthetic\",\"params\":{\"numPoints\":2000,\"numPartitions\":2,\"seed\":42}},"
+        + "\"algorithm\":{\"name\":\"bisectingkmeans\",\"params\":{\"k\":4,\"maxIter\":10}},"
+        + "\"evaluation\":{\"metrics\":[\"nClusters\",\"clusterSizes\"],\"seed\":42}"
+        + "}";
+
+    @Test
+    void runsBisectingKMeansEndToEnd() throws Exception {
+        RunConfig config = RunConfig.fromJsonString(BISECTING_JSON);
+        RunResult r = new FlinkClusteringJob().run(config, new ClusterProfile.LocalProfile());
+
+        assertEquals("ok", r.status, "run should succeed; error=" + r.errorMessage);
+        assertEquals(Integer.valueOf(4), r.nClusters, "k leaves requested and available");
+        long covered = r.clusterSizes.values().stream().mapToLong(Long::longValue).sum();
+        assertEquals(2000L, covered, "every point lands in a leaf");
+    }
+
+    /** DBSCAN++ is the only entry that can emit the noise label, so the e2e checks that the
+     *  noise plumbing (label -1 -> noiseFraction) works end to end on the synthetic mixture,
+     *  whose 5% uniform component is genuine noise at this eps. */
+    private static final String DBSCANPP_JSON =
+        "{"
+        + "\"runId\":\"test-dbscanpp-synth\","
+        + "\"profile\":\"local\","
+        + "\"dataset\":{\"type\":\"synthetic\",\"params\":{\"numPoints\":800,\"numPartitions\":2,\"seed\":42}},"
+        + "\"algorithm\":{\"name\":\"dbscanpp\",\"params\":{\"eps\":3.0,\"minPts\":5,"
+        + "\"coreSampleFraction\":0.5,\"sampling\":\"uniform\",\"distance\":\"euclidean\",\"seed\":42}},"
+        + "\"evaluation\":{\"metrics\":[\"nClusters\",\"clusterSizes\",\"noiseFraction\"],\"seed\":42}"
+        + "}";
+
+    @Test
+    void runsDbscanPlusPlusEndToEnd() throws Exception {
+        RunConfig config = RunConfig.fromJsonString(DBSCANPP_JSON);
+        RunResult r = new FlinkClusteringJob().run(config, new ClusterProfile.LocalProfile());
+
+        assertEquals("ok", r.status, "run should succeed; error=" + r.errorMessage);
+        assertTrue(r.nClusters > 0, "the dense modes must form clusters");
+        assertNotNull(r.noiseFraction);
+        assertTrue(r.noiseFraction > 0.0 && r.noiseFraction < 1.0,
+            "the uniform component must be noise, the dense modes must not: " + r.noiseFraction);
+        long covered = r.clusterSizes.values().stream().mapToLong(Long::longValue).sum();
+        assertEquals(800L, covered, "every point is labelled or marked noise");
+    }
+
     private static final String DISTFASTPAM_JSON =
         "{"
         + "\"runId\":\"test-distfastpam-synth\","

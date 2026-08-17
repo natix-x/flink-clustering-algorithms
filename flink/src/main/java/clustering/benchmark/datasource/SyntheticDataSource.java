@@ -2,7 +2,8 @@ package clustering.benchmark.datasource;
 
 import clustering.benchmark.config.Params;
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
+import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
@@ -44,7 +45,7 @@ public final class SyntheticDataSource implements DataSource {
     }
 
     @Override
-    public DataStream<double[]> load(StreamExecutionEnvironment env) {
+    public DataStream<DenseVector> load(StreamExecutionEnvironment env) {
         // Parallelism is taken from the environment (set per job by the EnvFactory),
         // NOT pinned here — so a sample can be collected deterministically at
         // parallelism 1 (index order) while fit runs at full parallelism. Each point
@@ -52,11 +53,11 @@ public final class SyntheticDataSource implements DataSource {
         // parallelism.
         return env.fromSequence(0L, numPoints - 1)
             .map(new GeneratePoint(seed))
-            .returns(PrimitiveArrayTypeInfo.DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO);
+            .returns(DenseVectorTypeInfo.INSTANCE);
     }
 
     /** Maps a point index to a sample, seeding a per-point RNG deterministically. */
-    private static final class GeneratePoint implements MapFunction<Long, double[]> {
+    private static final class GeneratePoint implements MapFunction<Long, DenseVector> {
         private final long seed;
 
         GeneratePoint(long seed) {
@@ -64,9 +65,9 @@ public final class SyntheticDataSource implements DataSource {
         }
 
         @Override
-        public double[] map(Long index) {
+        public DenseVector map(Long index) {
             Random rng = new Random(seed + index * 0x9E3779B97F4A7C15L);
-            return samplePoint(rng);
+            return new DenseVector(samplePoint(rng));
         }
     }
 

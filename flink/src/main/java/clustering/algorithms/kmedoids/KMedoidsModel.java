@@ -1,5 +1,6 @@
 package clustering.algorithms.kmedoids;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Model;
 import clustering.distance.DistanceMetric;
 
@@ -20,11 +21,12 @@ public class KMedoidsModel implements Model {
     }
 
     @Override
-    public int predict(double[] features) {
+    public int predict(DenseVector features) {
+        double[] point = features.values;
         int best = 0;
         double min = Double.MAX_VALUE;
         for (int j = 0; j < medoids.length; j++) {
-            double d = distance.compute(features, medoids[j]);
+            double d = distance.compute(point, medoids[j]);
             if (d < min) {
                 min = d;
                 best = j;

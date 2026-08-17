@@ -69,6 +69,16 @@
             <artifactId>flink-ml-core-1.17</artifactId>
             <version>${flinkml.version}</version>
         </dependency>
+        <!-- org.apache.flink.ml.linalg: DenseVector + its TypeInformation/serializer. Flink ML
+             keeps linalg in a separate artifact that flink-ml-core declares as 'provided', so it
+             is NOT pulled in transitively and has to be requested explicitly. This is the point
+             type the DataStream carries (the Flink counterpart of Spark's VectorUDT column);
+             operators unwrap it to double[] for their hot loops. -->
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-ml-servable-core-1.17</artifactId>
+            <version>${flinkml.version}</version>
+        </dependency>
 
         <!-- JSON contract (bundled into the fat jar). -->
         <dependency>
@@ -107,6 +117,14 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+                <configuration>
+                    <includes>
+                        <!-- Surefire's defaults miss *Spec, which is how the algorithm suites are
+                             named here to match the Spark repo's ScalaTest specs. -->
+                        <include>**/*Test.java</include>
+                        <include>**/*Spec.java</include>
+                    </includes>
+                </configuration>
             </plugin>
 
             <!-- Fat jar (without provided Flink): clustering.benchmark.BenchmarkRunner -->

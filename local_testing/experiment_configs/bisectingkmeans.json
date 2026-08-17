@@ -1,0 +1,18 @@
+{
+  "runId": "example-bisectingkmeans-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": { "numPoints": 1000000, "numPartitions": 8, "seed": 42 }
+  },
+  "algorithm": {
+    "name": "bisectingkmeans",
+    "params": { "k": 8, "maxIter": 20 }
+  },
+  "evaluation": {
+    "metrics": ["silhouette", "nClusters", "clusterSizes"],
+    "sampleSize": 5000,
+    "seed": 42
+  }
+}

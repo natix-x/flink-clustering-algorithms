@@ -1,0 +1,18 @@
+{
+  "runId": "example-dbscanexact-flink-local",
+  "profile": "local",
+  "outputDir": "benchmark-results",
+  "dataset": {
+    "type": "synthetic",
+    "params": { "numPoints": 2000000, "numPartitions": 8, "seed": 42 }
+  },
+  "algorithm": {
+    "name": "dbscanexact",
+    "params": { "eps": 2.0, "minPts": 10, "chunkSize": 10000, "distance": "euclidean", "seed": 42 }
+  },
+  "evaluation": {
+    "metrics": ["silhouette", "nClusters", "clusterSizes", "noiseFraction"],
+    "sampleSize": 5000,
+    "seed": 42
+  }
+}

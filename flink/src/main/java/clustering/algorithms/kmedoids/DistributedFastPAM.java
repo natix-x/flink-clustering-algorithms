@@ -1,11 +1,13 @@
 package clustering.algorithms.kmedoids;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
 import clustering.core.FlinkJobs;
 import clustering.core.Model;
 import clustering.core.PointSource;
+import clustering.core.Points;
 import clustering.distance.DistanceMetric;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,7 +47,7 @@ import java.util.List;
 import java.util.Optional;
 
 /** Distributed FastPAM on the Flink ML bounded-iteration framework (FLIP-176) — the whole
- *  training (BUILD + SWAP) is ONE Flink job, mirroring {@link clustering.algorithms.kmeans.FlinkMLKMeans}.
+ *  training (BUILD + SWAP) is ONE Flink job, mirroring {@link clustering.algorithms.kmeans.CentroidIteration}.
  *  This is the cluster-friendly path: no per-round job submission, points cached once.
  *
  *  <h3>Why FLIP-176 here</h3>
@@ -97,7 +99,7 @@ public class DistributedFastPAM implements Clusterer {
     public Model fit(PointSource source, EnvFactory envs, int parallelism) {
         // Candidate coordinates: collected once (deterministic index order), then shipped
         // with the operators in the single iteration job. O(n·dim) — NOT the O(n²) matrix.
-        double[][] c = Datasets.collectAll(source, envs).toArray(new double[0][]);
+        double[][] c = Points.toArray(Datasets.collectAll(source, envs));
         int n = c.length;
         if (n < k) {
             throw new IllegalArgumentException(
@@ -110,7 +112,7 @@ public class DistributedFastPAM implements Clusterer {
 
         DataStream<State> initState =
             env.fromCollection(java.util.Collections.singletonList(State.initial(k)), STATE_TYPE);
-        DataStream<double[]> points = source.create(env);
+        DataStream<DenseVector> points = source.create(env);
 
         DataStreamList result = Iterations.iterateBoundedStreamsUntilTermination(
             DataStreamList.of(initState),
@@ -146,7 +148,7 @@ public class DistributedFastPAM implements Clusterer {
         @Override
         public IterationBodyResult process(DataStreamList variableStreams, DataStreamList dataStreams) {
             DataStream<State> state = variableStreams.get(0);
-            DataStream<double[]> points = dataStreams.get(0);
+            DataStream<DenseVector> points = dataStreams.get(0);
 
             DataStream<Partial> partials = points
                 .connect(state.broadcast())
@@ -180,7 +182,7 @@ public class DistributedFastPAM implements Clusterer {
      *  {@code [n]} or SWAP shape {@code [n + n*k]} depending on {@code numSelected}. */
     private static final class PartialFold
             extends AbstractStreamOperator<Partial>
-            implements TwoInputStreamOperator<double[], State, Partial>,
+            implements TwoInputStreamOperator<DenseVector, State, Partial>,
                        IterationListener<Partial> {
 
         private final double[][] c;
@@ -217,8 +219,9 @@ public class DistributedFastPAM implements Clusterer {
         }
 
         @Override
-        public void processElement1(StreamRecord<double[]> record) throws Exception {
-            points.add(record.getValue());
+        public void processElement1(StreamRecord<DenseVector> record) throws Exception {
+            // Unwrap at the boundary: cache, state serializer and the scan all use the raw array.
+            points.add(record.getValue().values);
         }
 
         @Override

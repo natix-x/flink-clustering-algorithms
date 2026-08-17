@@ -4,6 +4,7 @@ import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
 import clustering.core.Model;
+import clustering.core.Points;
 import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
 
@@ -40,8 +41,7 @@ public class PAM implements Clusterer {
      *  memory. */
     @Override
     public Model fit(PointSource source, EnvFactory envs, int parallelism) {
-        List<double[]> points = Datasets.collectAll(source, envs);
-        return fitLocal(points.toArray(new double[0][]));
+        return fitLocal(Points.toArray(Datasets.collectAll(source, envs)));
     }
 
     /** Local entry point used by CLARA — no Flink overhead. All computation happens on

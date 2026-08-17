@@ -6,9 +6,11 @@ import clustering.core.EnvFactory;
 import clustering.core.FlinkJobs;
 import clustering.core.Model;
 import clustering.core.PointSource;
+import clustering.core.Points;
 import clustering.distance.DistanceMetric;
 import clustering.evaluation.SilhouetteEvaluator;
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
@@ -59,8 +61,9 @@ public final class EvaluationRunner {
     /** Silhouette on a driver-side head sample (uniform first-by-index; O(n^2) evaluator). */
     private double computeSilhouette(Model model, PointSource source, EnvFactory envs, EvaluationSpec spec) {
         long cap = spec.sampleSize != null ? spec.sampleSize : DEFAULT_SILHOUETTE_CAP;
-        List<double[]> sample = Datasets.collectHead(source, envs, cap);
-        return new SilhouetteEvaluator(distance).evaluate(sample, model.labels(sample));
+        List<DenseVector> sample = Datasets.collectHead(source, envs, cap);
+        // The evaluator is a driver-local O(n^2) scan, so it takes the raw arrays.
+        return new SilhouetteEvaluator(distance).evaluate(Points.toList(sample), model.labels(sample));
     }
 
     /** Distributed cluster sizes: label every point, count per label. */
@@ -82,7 +85,7 @@ public final class EvaluationRunner {
         return sizes;
     }
 
-    static final class LabelMap implements MapFunction<double[], LabelCount> {
+    static final class LabelMap implements MapFunction<DenseVector, LabelCount> {
         private final Model model;
 
         LabelMap(Model model) {
@@ -90,7 +93,7 @@ public final class EvaluationRunner {
         }
 
         @Override
-        public LabelCount map(double[] p) {
+        public LabelCount map(DenseVector p) {
             LabelCount c = new LabelCount();
             c.label = model.predict(p);
             c.count = 1L;

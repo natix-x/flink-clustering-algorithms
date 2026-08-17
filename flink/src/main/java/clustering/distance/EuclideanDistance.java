@@ -16,4 +16,20 @@ public final class EuclideanDistance implements DistanceMetric {
         }
         return Math.sqrt(sum);
     }
+
+    /** Squared distances, with an early exit: once the partial sum passes r² the remaining
+     *  coordinates cannot bring it back. */
+    @Override
+    public boolean withinRadius(double[] a, double[] b, double radius) {
+        double limit = radius * radius;
+        double sum = 0.0;
+        for (int i = 0; i < a.length; i++) {
+            double d = a[i] - b[i];
+            sum += d * d;
+            if (sum > limit) {
+                return false;
+            }
+        }
+        return sum <= limit;
+    }
 }

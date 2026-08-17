@@ -21,20 +21,35 @@ This repo owns only the algorithms and the Flink job. Experiment orchestration (
 expansion, SLURM submission), the exchange **contract**, and result analysis are
 engine-agnostic and live in the shared repo: [`clustering-algorithms-benchmark`](https://github.com/natix-x/clustering-algorithms-benchmark).
 
-It is the Flink counterpart of the Scala
-[`spark-clustering-algorithms`](https://github.com/natix-x/spark-clustering-algorithms)
-repo and deliberately mirrors its package layout
-(`clustering.core / distance / algorithms / evaluation` +
-`clustering.benchmark.{config,datasource,evaluation,metrics,registry}`), so the two
-engines are directly comparable. Flink is implemented in **Java, not Scala**: Flink's
-first-class API is Java (the Scala DataStream/DataSet API was deprecated in Flink 1.15
-and removed in Flink 2.0), and `flink-ml` has no Scala API — so Java is the honest,
-future-proof choice and does not affect the JVM-level metrics being compared.
-
 > **Note:** Some documentation and diagrams are in Polish, as the master thesis they accompany is written in Polish.
 
 Implemented algorithms:
 TODO: ADD DESCRIPTIONS/DIAGRAMS/WHAT CAN BE CONFIGURED HERE
+
+| registry name | what it is | params (defaults) |
+|---|---|---|
+| `kmeans` | Lloyd k-means, or spherical k-means (Dhillon & Modha 2001) via `geometry`; `refine: breathing` swaps the plain Lloyd run for Fritzke's breathing cycle around the identical loop | `k`, `maxIter` (100), `eps` (1e-4), `seed` (42), `geometry: euclidean\|spherical` (euclidean), `refine: none\|breathing` (none), `m0` (5), `maxCycles` (100) |
+| `bisectingkmeans` | divisive: split the highest-cost leaf with 2-means until k leaves; tree model, root-to-leaf labelling | `k`, `maxIter` (20), `eps` (1e-4), `seed` (42), `geometry` |
+| `pam` / `fastpam` | classic k-medoids and its FastPAM1 swap, driver-local O(n²) | `k`, `maxIter` (100), `distance` |
+| `distpam` / `distfastpam` | the same two swaps with the O(n²) work distributed (naive vs FastPAM1 — the speedup baseline pair) | `k`, `maxIter` (100), `distance` |
+| `clara` / `claraflip` | PAM on random samples; `claraflip` runs the whole multi-sample search as ONE Flink job | `k`, `numSamples` (5), `sampleSize` (1000), `maxIter` (100), `distance` |
+| `dbscanpp` | DBSCAN++ (Jang & Jiang, ICML 2019): sampled candidate cores, densities counted exactly against the full dataset | `eps`, `minPts`, `coreSampleFraction`, `sampling: uniform\|linspace\|kcenter` (uniform), `poolFactor` (4), `assign: eps\|closest` (eps), `chunkSize` (2000), `distance`, `seed` (42) |
+| `dbscanexact` | exact classic DBSCAN — the `dbscanpp` code path with `coreSampleFraction` pinned to 1.0; the exactness oracle for small data, validated against a textbook DBSCAN in `DBSCANppSpec` | `eps`, `minPts`, `assign` (eps), `chunkSize` (2000), `distance`, `seed` (42) |
+
+The k-means family takes no `distance`: the centroid update is an arithmetic mean, which is
+only geometry-consistent under its own geometry's metric, so `geometry` fixes the metric
+(euclidean → L2, spherical → cosine on the unit sphere). Evaluation then reuses that metric.
+
+Point weights are a Spark-side feature (optional `weight` column) with no counterpart in the
+Flink seam, where a point carries coordinates only. Every statistic here is therefore unweighted —
+identical to a Spark run whose input carries no weight column.
+
+The stream record is `org.apache.flink.ml.linalg.DenseVector` (from `flink-ml-servable-core`;
+`flink-ml-core` declares that artifact `provided`, hence the explicit dependency), the Flink
+counterpart of the `VectorUDT` column on the Spark side. It is the record type only: operators
+unwrap `.values` at the boundary, so caches, `ListStateWithCache` and every distance loop work on
+raw `double[]` — the same kernel both engines run. `clustering.core.Points` holds the wrap/unwrap
+helpers; unwrapping copies nothing, since `DenseVector.values` IS the vector's array.
 
 
 ## Architecture
@@ -97,17 +112,22 @@ The pipeline is assembled from config strings by three registries (all sharing a
 `NamedRegistry` for case-insensitive lookup + uniform "unknown X" errors), so adding an
 algorithm, data source, or metric is one factory entry — the runner never changes:
 
-- **`AlgorithmRegistry`** — `config.algorithm.name` → `Clusterer` factory
-  (kmeans / pam / fastpam / distpam / distfastpam / clara / claraflip).
+- **`AlgorithmRegistry`** — `config.algorithm.name` → `Clusterer` factory (kmeans /
+  bisectingkmeans / pam / fastpam / distpam / distfastpam / clara / claraflip / dbscanpp /
+  dbscanexact). It returns a `Built` pair — the clusterer **and** the metric it actually runs
+  with — so evaluation cannot silently score a fit with a different metric than it was made in.
 - **`DataSourceRegistry`** — `config.dataset.type` → `DataSource` factory (synthetic; Parquet planned).
 - **`DistanceRegistry`** — `params.distance` → `DistanceMetric` (Euclidean / Manhattan / Cosine).
+- **`GeometryRegistry`** — `params.geometry` → `Geometry` (euclidean / spherical), the space a
+  centroid algorithm optimises in; it decides the metric, so the k-means family reads no
+  `distance` param.
 
 Core abstractions (`clustering.core`) keep algorithms uniform:
 
 - `Clusterer.fit(PointSource, EnvFactory, parallelism): Model` — the fitting seam every
   algorithm implements. `EnvFactory` hands out fresh Flink `StreamExecutionEnvironment`s
   so each Flink action runs on a clean env.
-- `Model.predict(double[]): int` / `Model.labels(List<double[]>): int[]` — assign each
+- `Model.predict(DenseVector): int` / `Model.labels(List<DenseVector>): int[]` — assign each
   point to a cluster id. Batch-only by design.
 
 `FlinkClusteringJob` wires these together for one run: load the `DataSource`, `fit` the
@@ -115,26 +135,53 @@ Core abstractions (`clustering.core`) keep algorithms uniform:
 sampled silhouette; only the metrics named in `EvaluationSpec` are computed), and collect
 metrics into a `RunResult`.
 
-### KMeans on the Flink ML iteration framework
+### Iterative algorithms on the Flink ML iteration framework
 
-**KMeans** is built on the **Flink ML bounded-iteration framework** (FLIP-176): the
-algorithm is ours (init / assignment / mean update / empty-cluster handling), only the
-iteration runtime is Flink ML's. Centroids cycle through a feedback edge, so the whole
-training is ONE Flink job (cluster-friendly).
+Every multi-round algorithm here runs as **ONE Flink job** on the **Flink ML
+bounded-iteration framework** (FLIP-176). The algorithms are ours (init / assignment /
+update / empty-cluster handling / stopping rules); only the iteration runtime is Flink ML's.
+The shape is always the same: a parallel fold over the points feeds a parallelism-1 combiner,
+whose decision cycles back through a feedback edge, and a custom termination criterion ends
+the job.
 
-- **Distributed:** each round, a parallel `PartialAssign` (per-subtask partial sums +
-  counts) feeds a single-task `CombinePartials` (merges k-sized partials into the new
-  centroids). The distance work scales with parallelism, like Spark.
-- **Memory-safe:** `PartialAssign` caches its local points in a `ListStateWithCache`
-  (memory + disk spill, same as flink-ml's KMeans), so datasets larger than worker heap
-  don't OOM.
-- **Early termination:** `CombinePartials` checks centroid movement and emits a custom
-  termination criterion — the iteration stops on convergence (max move < `eps`) or after
-  `maxIter`, whichever comes first.
+- **Distributed:** each round, a parallel fold emits per-subtask partial aggregates (k-sized)
+  and the single-task combiner merges them. The distance work scales with parallelism, like Spark.
+- **Memory-safe:** the fold caches its local points in a `ListStateWithCache` (memory + disk
+  spill, same as flink-ml's KMeans), so datasets larger than worker heap don't OOM.
+- **Early termination:** the combiner emits a "continue" token only while it wants another
+  round — convergence (max centroid move < `eps`) or `maxIter`, whichever comes first.
 - **Deterministic & reproducible:** initial centroids come from a deterministic head
   sample (first points by index, collected at parallelism 1), so the same config + seed
   gives the same result regardless of compute parallelism. Only tiny init/silhouette
   samples run at parallelism 1; the heavy fit/count/sizes jobs run at full parallelism.
+  Round aggregates are summed in subtask-id order. One honest limit: Flink's rebalance
+  partitioner starts at a random channel, so which subtask sees which point varies between
+  runs — invisible except where a decision is an exact tie (see `BisectingKMeans`).
+
+`CentroidIteration` is that job, factored out: the per-round decision is a pluggable
+`RoundDriver` living in the combiner, so `kmeans` (Lloyd) and `refine: breathing` (Fritzke's
+add/remove cycle) are two drivers over one job rather than two algorithms — and the centroid
+set is allowed to change size between rounds, which breathing needs (k → k+m → k).
+
+Where this deliberately differs from the Spark side — each engine gets the best version *that*
+engine can express, and the asymmetries are results worth reporting:
+
+| algorithm | Spark | Flink |
+|---|---|---|
+| `kmeans` + `refine: breathing` | one distributed job per Lloyd iteration, plus a statistics job per breathing phase | one job for the entire search; error/utility statistics come free from the same scan as the mean update, at the cost of one extra measuring pass per phase transition (so SSE comparisons stay exact) |
+| `bisectingkmeans` | materialises (`persist`) each leaf's point subset and runs a fresh k-means per split | one job: points cached once, the CLUSTER TREE travels the feedback edge and a point's leaf is a root-to-leaf walk — no leaf subset is ever written or re-derived |
+| `dbscanpp` step 2 (ε-counting) | candidates broadcast in chunks, ONE JOB (= one full pass over the data) PER CHUNK | chunks are ROUNDS of one job: only the current chunk crosses the feedback edge, so chunking still bounds per-subtask memory but the data is read exactly once |
+| `dbscanpp` step 3 (ε-graph) | the m²/2 edge scan is cut into row blocks whose size is estimated from the expected edge count, because `collect` materialises a block; a dense graph is refused the cluster and falls back to the driver | one job, edges **streamed** into the union-find through the back-pressured collect iterator: no blocks, no size estimate, and no density at which the phase has to give up the cluster |
+
+Driver-local by design in both engines (and for the same reason — it is O(m) or O(m²) over a
+bounded candidate set, not over the data): the `dbscanpp` union-find, the `kcenter` traversal, and
+PAM on a CLARA sample. The `dbscanpp` ε-graph EDGE SCAN is the exception — it goes to the cluster,
+but only when the cluster can actually help. Measured on one 12-core machine (m = 100 000, 3-D,
+sparse graph): driver-local 5.0 s vs distributed 21.9 s, because the driver-local path already uses
+every core the driver has. So the path is chosen from (a) whether the scan keeps the driver busy for
+≥ 30 s and (b) whether cluster parallelism is ≥ 2× the driver's core count — extra workers, not
+extra rows, are what pay for a job. Both paths produce identical labels (`EpsilonGraphComponentsSpec`
+pins that, and both against a BFS from the definition), so the decision can never change a result.
 
 > **ENGINE metric fields** (shuffle / GC / task counters) are aggregated from the custom
 > `FileMetricReporter` per-process dumps; see `BenchmarkListener` and `MetricsFile` for
@@ -147,10 +194,11 @@ training is ONE Flink job (cluster-friendly).
 ├── flink/                        # Java/Flink Maven project (the fat jar)
 │   ├── pom.xml                   # Java/Flink build, shade into a fat jar
 │   ├── src/main/java/clustering/
-│   │   ├── core/                 # Clusterer / Model abstractions, EnvFactory, PointSource
-│   │   ├── algorithms/           # clustering algorithms implementations
+│   │   ├── core/                 # Clusterer / Model abstractions, EnvFactory, PointSource, Geometry
+│   │   ├── algorithms/           # clustering algorithms implementations (kmeans / kmedoids / dbscan)
 │   │   ├── distance/             # Euclidean / Manhattan / Cosine metrics
 │   │   ├── evaluation/           # clustering metrics (silhouette)
+│   │   ├── utils/                # small shared structures (union-find)
 │   │   ├── metrics/              # custom FileMetricReporter (engine metrics)
 │   │   └── benchmark/            # runner (--config) + config, datasource, evaluation, metrics, registry
 │   └── ...
@@ -197,7 +245,14 @@ uniform across engines.
 dataset on a local MiniCluster and asserts the emitted `RunResult` — an `ok` run and a
 `failed` run (unknown algorithm) — so the contract shape is exercised on every build.
 
+Per-algorithm suites (`*Spec`, counterparts of the Spark repo's ScalaTest specs) run on the
+same MiniCluster: `KMeansSpec` (blob recovery, the `geometry` knob, reproducibility),
+`BreathingKMeansSpec` (breathing must escape a local minimum plain Lloyd is stuck in, not just
+run), `BisectingKMeansSpec`, `UnionFindSpec`, and `DBSCANppSpec` — which pins `dbscanexact`
+against a textbook DBSCAN written from the definition inside the test, so "exact" is a checked
+claim in both engines and not an agreement between two distributed implementations.
+
 ```bash
 cd flink
-mvn test                 # end-to-end smoke test (FlinkClusteringJobTest)
+mvn test                 # end-to-end smoke test + all algorithm specs
 ```
