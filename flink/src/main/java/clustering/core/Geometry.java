@@ -1,6 +1,7 @@
 package clustering.core;
 
 import clustering.distance.DistanceMetric;
+import org.apache.flink.ml.linalg.DenseVector;
 
 import java.io.Serializable;
 
@@ -30,7 +31,7 @@ public interface Geometry extends Serializable {
 
     DistanceMetric modelDistance();
 
-    double[] project(double[] centroid);
+    DenseVector project(DenseVector centroid);
 
     /** L2-normalises {@code v} into a NEW array; a zero vector is returned unchanged (both
      *  cosine variants already treat it as maximally distant). */

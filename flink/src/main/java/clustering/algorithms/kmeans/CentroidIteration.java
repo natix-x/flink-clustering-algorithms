@@ -11,7 +11,6 @@ import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.iteration.DataStreamList;
@@ -23,7 +22,9 @@ import org.apache.flink.iteration.Iterations;
 import org.apache.flink.iteration.ReplayableDataStreamList;
 import org.apache.flink.iteration.datacache.nonkeyed.ListStateWithCache;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
+import org.apache.flink.api.java.typeutils.ObjectArrayTypeInfo;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -79,8 +80,10 @@ import java.util.Random;
  *  near-ties may resolve differently — unavoidable for a distributed sum. */
 public final class CentroidIteration {
 
-    private static final TypeInformation<double[][]> CENTROIDS_TYPE =
-        Types.OBJECT_ARRAY(PrimitiveArrayTypeInfo.DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO);
+    /** Prototype sets travel as {@code DenseVector[]} — same shape Flink ML's own iteration
+     *  uses for centroids, and the counterpart of Spark's {@code Array[Vector]}. */
+    private static final TypeInformation<DenseVector[]> CENTROIDS_TYPE =
+        ObjectArrayTypeInfo.getInfoFor(DenseVectorTypeInfo.INSTANCE);
     private static final TypeInformation<Partial> PARTIAL_TYPE = TypeInformation.of(Partial.class);
     private static final TypeInformation<Update> UPDATE_TYPE = TypeInformation.of(Update.class);
 
@@ -98,19 +101,19 @@ public final class CentroidIteration {
 
     /** A driver's verdict for one round. */
     public static final class Decision {
-        public final double[][] centroids;
+        public final DenseVector[] centroids;
         public final boolean stop;
 
-        public Decision(double[][] centroids, boolean stop) {
+        public Decision(DenseVector[] centroids, boolean stop) {
             this.centroids = centroids;
             this.stop = stop;
         }
 
-        public static Decision cont(double[][] centroids) {
+        public static Decision cont(DenseVector[] centroids) {
             return new Decision(centroids, false);
         }
 
-        public static Decision stop(double[][] centroids) {
+        public static Decision stop(DenseVector[] centroids) {
             return new Decision(centroids, true);
         }
     }
@@ -124,13 +127,13 @@ public final class CentroidIteration {
      *  - {@code utilities[i]} — U(c_i) = sum (d2^2 - d1^2), the error increase deleting c_i
      *                           would cause, i.e. the breathe-out criterion */
     public static final class RoundStats {
-        public final double[][] centroids;
+        public final DenseVector[] centroids;
         public final long[] counts;
         public final double[][] sums;
         public final double[] errors;
         public final double[] utilities;
 
-        RoundStats(double[][] centroids, long[] counts, double[][] sums, double[] errors, double[] utilities) {
+        RoundStats(DenseVector[] centroids, long[] counts, double[][] sums, double[] errors, double[] utilities) {
             this.centroids = centroids;
             this.counts = counts;
             this.sums = sums;
@@ -157,8 +160,8 @@ public final class CentroidIteration {
 
         /** Lloyd update: the mean of each cell, projected onto {@code geometry}. An empty cell
          *  keeps its old centroid (same fallback as the Spark implementation). */
-        public double[][] means(Geometry geometry) {
-            double[][] next = new double[centroids.length][];
+        public DenseVector[] means(Geometry geometry) {
+            DenseVector[] next = new DenseVector[centroids.length];
             for (int i = 0; i < centroids.length; i++) {
                 if (counts[i] == 0L) {
                     next[i] = centroids[i];
@@ -167,7 +170,7 @@ public final class CentroidIteration {
                     for (int d = 0; d < mean.length; d++) {
                         mean[d] = sums[i][d] / counts[i];
                     }
-                    next[i] = geometry.project(mean);
+                    next[i] = geometry.project(new DenseVector(mean));
                 }
             }
             return next;
@@ -175,10 +178,10 @@ public final class CentroidIteration {
     }
 
     /** Runs the iteration to completion and returns the driver's final prototype set. */
-    public static double[][] run(
+    public static DenseVector[] run(
             PointSource preparedSource,
             EnvFactory envs,
-            double[][] initialCentroids,
+            DenseVector[] initialCentroids,
             DistanceMetric fitDistance,
             RoundDriver driver,
             String jobName) {
@@ -189,7 +192,7 @@ public final class CentroidIteration {
         StreamExecutionEnvironment env = envs.newEnv();
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
 
-        DataStream<double[][]> initStream =
+        DataStream<DenseVector[]> initStream =
             env.fromCollection(Collections.singletonList(initialCentroids), CENTROIDS_TYPE);
         DataStream<DenseVector> points = preparedSource.create(env);
 
@@ -199,7 +202,7 @@ public final class CentroidIteration {
             IterationConfig.newBuilder().build(),
             new CentroidIterationBody(fitDistance, driver));
 
-        double[][] finalCentroids = FlinkJobs.last(result.<double[][]>get(0), jobName);
+        DenseVector[] finalCentroids = FlinkJobs.last(result.<DenseVector[]>get(0), jobName);
         return finalCentroids == null ? initialCentroids : finalCentroids;
     }
 
@@ -215,7 +218,7 @@ public final class CentroidIteration {
 
         @Override
         public IterationBodyResult process(DataStreamList variableStreams, DataStreamList dataStreams) {
-            DataStream<double[][]> centroids = variableStreams.get(0);
+            DataStream<DenseVector[]> centroids = variableStreams.get(0);
             DataStream<DenseVector> points = dataStreams.get(0);
 
             DataStream<Partial> partials = points
@@ -228,8 +231,8 @@ public final class CentroidIteration {
                 .returns(UPDATE_TYPE);
 
             // Feedback parallelism must match the initial variable stream (1).
-            DataStream<double[][]> newCentroids = updates
-                .map((MapFunction<Update, double[][]>) u -> u.centroids)
+            DataStream<DenseVector[]> newCentroids = updates
+                .map((MapFunction<Update, DenseVector[]>) u -> u.centroids)
                 .returns(CENTROIDS_TYPE)
                 .setParallelism(1);
 
@@ -254,12 +257,12 @@ public final class CentroidIteration {
      *  round, so a driver may grow or shrink the set between rounds. */
     private static final class PartialAssign
             extends AbstractStreamOperator<Partial>
-            implements TwoInputStreamOperator<DenseVector, double[][], Partial>,
+            implements TwoInputStreamOperator<DenseVector, DenseVector[], Partial>,
                        IterationListener<Partial> {
 
         private final DistanceMetric distance;
-        private transient ListStateWithCache<double[]> points;
-        private transient ListState<double[][]> centroids;
+        private transient ListStateWithCache<DenseVector> points;
+        private transient ListState<DenseVector[]> centroids;
 
         PartialAssign(DistanceMetric distance) {
             this.distance = distance;
@@ -271,7 +274,7 @@ public final class CentroidIteration {
             centroids = context.getOperatorStateStore()
                 .getListState(new ListStateDescriptor<>("centroids", CENTROIDS_TYPE));
             points = new ListStateWithCache<>(
-                PrimitiveArrayTypeInfo.DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO.createSerializer(getExecutionConfig()),
+                DenseVectorTypeInfo.INSTANCE.createSerializer(getExecutionConfig()),
                 getContainingTask(),
                 getRuntimeContext(),
                 context,
@@ -286,25 +289,23 @@ public final class CentroidIteration {
 
         @Override
         public void processElement1(StreamRecord<DenseVector> record) throws Exception {
-            // Unwrap once, at the boundary: the cache, the state serializer and the assignment
-            // loop all work on the raw array, so the wrapper never enters an inner loop.
-            points.add(record.getValue().values);
+            points.add(record.getValue());
         }
 
         @Override
-        public void processElement2(StreamRecord<double[][]> record) throws Exception {
+        public void processElement2(StreamRecord<DenseVector[]> record) throws Exception {
             centroids.add(record.getValue());
         }
 
         @Override
         public void onEpochWatermarkIncremented(int epoch, Context context, Collector<Partial> out) throws Exception {
-            Optional<double[][]> current = OperatorStateUtils.getUniqueElement(centroids, "centroids");
+            Optional<DenseVector[]> current = OperatorStateUtils.getUniqueElement(centroids, "centroids");
             if (!current.isPresent()) {
                 return;
             }
-            double[][] c = current.get();
+            DenseVector[] c = current.get();
             int k = c.length;
-            int dim = c[0].length;
+            int dim = c[0].size();
 
             Partial partial = new Partial();
             partial.subtask = getRuntimeContext().getIndexOfThisSubtask();
@@ -314,7 +315,7 @@ public final class CentroidIteration {
             partial.errors = new double[k];
             partial.utilities = new double[k];
 
-            for (double[] p : points.get()) {
+            for (DenseVector p : points.get()) {
                 // Nearest and second nearest in one scan: d2 feeds Fritzke's utility.
                 int nearest = 0;
                 double d1 = Double.MAX_VALUE;
@@ -332,8 +333,9 @@ public final class CentroidIteration {
                 // A single centroid has no second nearest: utility 0, not +inf.
                 double d2Squared = (d2 == Double.MAX_VALUE) ? d1 * d1 : d2 * d2;
                 double[] sum = partial.sums[nearest];
+                double[] coords = p.values;
                 for (int d = 0; d < dim; d++) {
-                    sum[d] += p[d];
+                    sum[d] += coords[d];
                 }
                 partial.counts[nearest]++;
                 partial.errors[nearest] += d1 * d1;
@@ -382,9 +384,9 @@ public final class CentroidIteration {
                 return;
             }
             buffer.sort(Comparator.comparingInt(p -> p.subtask));
-            double[][] centroids = buffer.get(0).centroids;
+            DenseVector[] centroids = buffer.get(0).centroids;
             int k = centroids.length;
-            int dim = centroids[0].length;
+            int dim = centroids[0].size();
 
             long[] counts = new long[k];
             double[][] sums = new double[k][dim];
@@ -439,7 +441,7 @@ public final class CentroidIteration {
     /** Per-subtask partial aggregate for one round. POJO for Flink serialization. */
     public static final class Partial implements Serializable {
         public int subtask;
-        public double[][] centroids;
+        public DenseVector[] centroids;
         public long[] counts;
         public double[][] sums;
         public double[] errors;
@@ -450,7 +452,7 @@ public final class CentroidIteration {
 
     /** Combined per-round result: the prototype set for the next round + whether to stop. */
     public static final class Update implements Serializable {
-        public double[][] centroids;
+        public DenseVector[] centroids;
         public boolean stop;
 
         public Update() {}
@@ -468,7 +470,7 @@ public final class CentroidIteration {
      *  drawn from that head with a seeded RNG. Both are "a seeded sample of the data"; this
      *  one is reproducible across parallelism settings, which the reproducibility measurements
      *  need, and avoids a shuffle whose only purpose is picking k rows. */
-    public static double[][] sampleInitialCentroids(PointSource preparedSource, EnvFactory envs, int k, long seed) {
+    public static DenseVector[] sampleInitialCentroids(PointSource preparedSource, EnvFactory envs, int k, long seed) {
         if (k < 1) {
             throw new IllegalArgumentException("k must be >= 1, got " + k);
         }
@@ -479,21 +481,21 @@ public final class CentroidIteration {
                 "Could not sample " + k + " initial centroids — too few points (n=" + n + ").");
         }
         Random rng = new Random(seed);
-        double[][] centroids = new double[k][];
+        DenseVector[] centroids = new DenseVector[k];
         boolean[] taken = new boolean[n];
         int picked = 0;
         while (picked < k) {
             int idx = rng.nextInt(n);
             if (!taken[idx]) {
                 taken[idx] = true;
-                centroids[picked++] = candidates.get(idx).values.clone();
+                centroids[picked++] = new DenseVector(candidates.get(idx).values.clone());
             }
         }
         return centroids;
     }
 
     /** Largest centroid movement between two equally-sized sets, under {@code distance}. */
-    public static double maxMovement(double[][] from, double[][] to, DistanceMetric distance) {
+    public static double maxMovement(DenseVector[] from, DenseVector[] to, DistanceMetric distance) {
         double max = 0.0;
         for (int i = 0; i < from.length; i++) {
             max = Math.max(max, distance.compute(from[i], to[i]));

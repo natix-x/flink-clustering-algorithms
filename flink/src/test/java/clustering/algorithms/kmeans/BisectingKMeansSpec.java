@@ -1,5 +1,6 @@
 package clustering.algorithms.kmeans;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Points;
 import clustering.TestFixtures;
 import clustering.core.EnvFactory;
@@ -66,8 +67,8 @@ class BisectingKMeansSpec {
             expected[0] += p[0] / points.size();
             expected[1] += p[1] / points.size();
         }
-        assertEquals(expected[0], model.clusterCentroids()[0][0], 1e-6);
-        assertEquals(expected[1], model.clusterCentroids()[0][1], 1e-6);
+        assertEquals(expected[0], model.clusterCentroids()[0].values[0], 1e-6);
+        assertEquals(expected[1], model.clusterCentroids()[0].values[1], 1e-6);
     }
 
     /** Reproducibility is asserted on DIFFERENTLY-SIZED blobs on purpose. Flink's rebalance

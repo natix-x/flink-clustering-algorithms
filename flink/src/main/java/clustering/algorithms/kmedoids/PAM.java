@@ -1,5 +1,6 @@
 package clustering.algorithms.kmedoids;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
@@ -67,9 +68,9 @@ public class PAM implements Clusterer {
             iter++;
         }
 
-        double[][] medoidPoints = new double[k][];
+        DenseVector[] medoidPoints = new DenseVector[k];
         for (int i = 0; i < k; i++) {
-            medoidPoints[i] = points[medoids[i]];
+            medoidPoints[i] = new DenseVector(points[medoids[i]]);
         }
         return new KMedoidsModel(medoidPoints, distance);
     }

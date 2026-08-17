@@ -1,5 +1,6 @@
 package clustering.algorithms.kmeans;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Clusterer;
 import clustering.core.EnvFactory;
 import clustering.core.Geometry;
@@ -75,8 +76,8 @@ public class BreathingKMeans implements Clusterer {
     @Override
     public KMeansModel fit(PointSource source, EnvFactory envs, int parallelism) {
         PointSource prepared = geometry.prepare(source);
-        double[][] init = CentroidIteration.sampleInitialCentroids(prepared, envs, k, seed);
-        double[][] best = CentroidIteration.run(
+        DenseVector[] init = CentroidIteration.sampleInitialCentroids(prepared, envs, k, seed);
+        DenseVector[] best = CentroidIteration.run(
             prepared, envs, init, geometry.fitDistance(),
             new BreathingDriver(k, m0, maxIter, eps, seed, geometry, maxCycles), "breathing-kmeans-fit");
         return new KMeansModel(best, geometry.modelDistance());
@@ -117,7 +118,7 @@ public class BreathingKMeans implements Clusterer {
         private int lloydRounds;
         private int currentM;
         private int cycles;
-        private double[][] bestCentroids;
+        private DenseVector[] bestCentroids;
         private double bestError = Double.MAX_VALUE;
 
         BreathingDriver(int k, int m0, int maxIter, double eps, long seed,
@@ -159,7 +160,7 @@ public class BreathingKMeans implements Clusterer {
         /** One Lloyd round; on convergence (or the {@code maxIter} bound) the next round is
          *  {@code measurePhase}, which scores the converged set exactly. */
         private CentroidIteration.Decision lloyd(CentroidIteration.RoundStats stats, Phase measurePhase) {
-            double[][] next = stats.means(geometry);
+            DenseVector[] next = stats.means(geometry);
             double movement = CentroidIteration.maxMovement(stats.centroids, next, geometry.fitDistance());
             lloydRounds++;
             if (movement < eps || lloydRounds >= maxIter) {
@@ -173,7 +174,7 @@ public class BreathingKMeans implements Clusterer {
          *  highest-error centroids. At most one insertion per existing centroid, so a breath is
          *  capped at |C| — with k &lt; m fewer than m centroids are actually inserted. */
         private CentroidIteration.Decision breatheIn(CentroidIteration.RoundStats stats) {
-            double[][] centroids = stats.centroids;
+            DenseVector[] centroids = stats.centroids;
             long mass = stats.totalCount();
             double rmse = mass > 0L ? Math.sqrt(stats.totalError() / mass) : 0.0;
 
@@ -184,7 +185,7 @@ public class BreathingKMeans implements Clusterer {
                 .thenComparingInt(i -> i));
 
             int insertions = Math.min(currentM, centroids.length);
-            double[][] expanded = new double[centroids.length + insertions][];
+            DenseVector[] expanded = new DenseVector[centroids.length + insertions];
             System.arraycopy(centroids, 0, expanded, 0, centroids.length);
             for (int i = 0; i < insertions; i++) {
                 expanded[centroids.length + i] = offset(centroids[byError[i]], rmse);
@@ -200,20 +201,20 @@ public class BreathingKMeans implements Clusterer {
          *  the invariant is "shrink back to k", not "remove m", so a capped breath cannot empty
          *  the centroid set. */
         private CentroidIteration.Decision breatheOut(CentroidIteration.RoundStats stats) {
-            double[][] expanded = stats.centroids;
+            DenseVector[] expanded = stats.centroids;
             int removalCount = expanded.length - k;
-            double[][] reduced;
+            DenseVector[] reduced;
             if (removalCount <= 0) {
                 reduced = expanded;
             } else {
                 Set<Integer> removed = selectForRemoval(expanded, stats.utilities, removalCount);
-                List<double[]> kept = new ArrayList<>(k);
+                List<DenseVector> kept = new ArrayList<>(k);
                 for (int i = 0; i < expanded.length; i++) {
                     if (!removed.contains(i)) {
                         kept.add(expanded[i]);
                     }
                 }
-                reduced = kept.toArray(new double[0][]);
+                reduced = kept.toArray(new DenseVector[0]);
             }
             phase = Phase.LLOYD_REDUCED;
             lloydRounds = 0;
@@ -253,18 +254,19 @@ public class BreathingKMeans implements Clusterer {
         /** {@code c + INSERTION_SCALE · RMSE · u}, u uniform in the unit hypercube centred at
          *  the origin. Projected onto the geometry, so on the unit sphere the inserted centroid
          *  stays a unit vector. */
-        private double[] offset(double[] centroid, double rmse) {
-            double[] perturbed = new double[centroid.length];
-            for (int i = 0; i < centroid.length; i++) {
-                perturbed[i] = centroid[i] + INSERTION_SCALE * rmse * (random.nextDouble() - 0.5);
+        private DenseVector offset(DenseVector centroid, double rmse) {
+            double[] coords = centroid.values;
+            double[] perturbed = new double[coords.length];
+            for (int i = 0; i < coords.length; i++) {
+                perturbed[i] = coords[i] + INSERTION_SCALE * rmse * (random.nextDouble() - 0.5);
             }
-            return geometry.project(perturbed);
+            return geometry.project(new DenseVector(perturbed));
         }
 
         /** Indices of the {@code removalCount} centroids to delete: lowest utility first,
          *  freezing the nearest neighbour of every centroid picked, as long as
          *  {@code |frozen| + removalCount < |C|}. */
-        private Set<Integer> selectForRemoval(double[][] centroids, double[] utilities, int removalCount) {
+        private Set<Integer> selectForRemoval(DenseVector[] centroids, double[] utilities, int removalCount) {
             Integer[] byUtility = indices(centroids.length);
             java.util.Arrays.sort(byUtility, Comparator
                 .<Integer>comparingDouble(i -> utilities[i])
@@ -295,7 +297,7 @@ public class BreathingKMeans implements Clusterer {
             return removed;
         }
 
-        private static int nearestNeighbour(double[][] centroids, int idx, DistanceMetric metric) {
+        private static int nearestNeighbour(DenseVector[] centroids, int idx, DistanceMetric metric) {
             int nearest = -1;
             double nearestDistance = Double.MAX_VALUE;
             for (int i = 0; i < centroids.length; i++) {

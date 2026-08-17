@@ -1,5 +1,6 @@
 package clustering.algorithms.kmeans;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Points;
 import clustering.TestFixtures;
 import clustering.core.EnvFactory;
@@ -88,8 +89,9 @@ class KMeansSpec {
         assertEquals(labels[3], labels[4], "y-ray points share a cluster regardless of magnitude");
         assertEquals(labels[3], labels[5]);
         assertTrue(labels[0] != labels[3], "the two directions must not merge");
-        for (double[] centroid : model.centroids()) {
-            double norm = Math.sqrt(centroid[0] * centroid[0] + centroid[1] * centroid[1]);
+        for (DenseVector centroid : model.centroids()) {
+            double[] c = centroid.values;
+            double norm = Math.sqrt(c[0] * c[0] + c[1] * c[1]);
             assertEquals(1.0, norm, 1e-9, "spherical centroids stay on the unit sphere");
         }
     }
@@ -109,8 +111,8 @@ class KMeansSpec {
             expected[0] += p[0] / points.size();
             expected[1] += p[1] / points.size();
         }
-        assertEquals(expected[0], model.centroids()[0][0], 1e-6);
-        assertEquals(expected[1], model.centroids()[0][1], 1e-6);
+        assertEquals(expected[0], model.centroids()[0].values[0], 1e-6);
+        assertEquals(expected[1], model.centroids()[0].values[1], 1e-6);
     }
 
     private static void assertArrayEqualsLabels(int[] a, int[] b) {

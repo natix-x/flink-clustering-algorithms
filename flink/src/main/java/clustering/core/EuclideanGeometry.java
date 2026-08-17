@@ -2,6 +2,7 @@ package clustering.core;
 
 import clustering.distance.DistanceMetric;
 import clustering.distance.EuclideanDistance;
+import org.apache.flink.ml.linalg.DenseVector;
 
 /** Plain Euclidean (Lloyd) geometry — the default, so old configs keep their meaning. */
 public final class EuclideanGeometry implements Geometry {
@@ -31,7 +32,7 @@ public final class EuclideanGeometry implements Geometry {
     }
 
     @Override
-    public double[] project(double[] centroid) {
+    public DenseVector project(DenseVector centroid) {
         return centroid;
     }
 }

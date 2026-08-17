@@ -123,9 +123,9 @@ public class DistributedFastPAM implements Clusterer {
         State finalState = FlinkJobs.last(result.<State>get(0), "distfastpam-fit");
 
         int[] medoids = (finalState == null) ? firstK(n, k) : finalState.medoids;
-        double[][] medoidCoords = new double[k][];
+        DenseVector[] medoidCoords = new DenseVector[k];
         for (int i = 0; i < k; i++) {
-            medoidCoords[i] = c[medoids[i]];
+            medoidCoords[i] = new DenseVector(c[medoids[i]]);
         }
         return new KMedoidsModel(medoidCoords, distance);
     }

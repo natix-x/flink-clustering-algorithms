@@ -261,10 +261,12 @@ public class ClaraFlip implements Clusterer {
             stateList.clear();
         }
 
-        private double nearest(double[][] medoids, double[] x) {
+        private double nearest(DenseVector[] medoids, double[] x) {
             double min = Double.MAX_VALUE;
-            for (double[] m : medoids) {
-                double d = distance.compute(m, x);
+            for (DenseVector m : medoids) {
+                // The cached points are raw arrays here (the sample feeds the driver-local PAM,
+                // which works on a flat distance matrix), so this is the array-form kernel.
+                double d = distance.compute(m.values, x);
                 if (d < min) {
                     min = d;
                 }
@@ -415,8 +417,8 @@ public class ClaraFlip implements Clusterer {
      *  evaluation, and the best medoid set found so far. */
     public static final class State implements Serializable {
         public int round;
-        public double[][] pendingMedoids;  // candidate from last round's PAM, scored this round
-        public double[][] bestMedoids;
+        public DenseVector[] pendingMedoids;  // candidate from last round's PAM, scored this round
+        public DenseVector[] bestMedoids;
         public double bestCost;
 
         public State() {}

@@ -8,25 +8,24 @@ import clustering.distance.DistanceMetric;
  *  centres are actual data points (medoids) instead of arbitrary centroids. */
 public class KMedoidsModel implements Model {
 
-    private final double[][] medoids;
+    private final DenseVector[] medoids;
     private final DistanceMetric distance;
 
-    public KMedoidsModel(double[][] medoids, DistanceMetric distance) {
+    public KMedoidsModel(DenseVector[] medoids, DistanceMetric distance) {
         this.medoids = medoids;
         this.distance = distance;
     }
 
-    public double[][] medoids() {
+    public DenseVector[] medoids() {
         return medoids;
     }
 
     @Override
     public int predict(DenseVector features) {
-        double[] point = features.values;
         int best = 0;
         double min = Double.MAX_VALUE;
         for (int j = 0; j < medoids.length; j++) {
-            double d = distance.compute(point, medoids[j]);
+            double d = distance.compute(features, medoids[j]);
             if (d < min) {
                 min = d;
                 best = j;

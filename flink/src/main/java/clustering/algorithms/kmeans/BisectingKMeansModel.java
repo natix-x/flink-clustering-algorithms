@@ -20,7 +20,7 @@ import clustering.distance.DistanceMetric;
  *  Ties go left, so labelling is deterministic. */
 public class BisectingKMeansModel implements Model {
 
-    private final double[][] centroids;
+    private final DenseVector[] centroids;
     private final int[] left;
     private final int[] right;
     /** Cluster id per node; {@code -1} for internal nodes. Numbered in left-to-right DFS
@@ -28,7 +28,7 @@ public class BisectingKMeansModel implements Model {
     private final int[] leafId;
     private final DistanceMetric distance;
 
-    public BisectingKMeansModel(double[][] centroids, int[] left, int[] right, int[] leafId,
+    public BisectingKMeansModel(DenseVector[] centroids, int[] left, int[] right, int[] leafId,
                                 DistanceMetric distance) {
         this.centroids = centroids;
         this.left = left;
@@ -39,12 +39,11 @@ public class BisectingKMeansModel implements Model {
 
     @Override
     public int predict(DenseVector features) {
-        double[] point = features.values;
         int node = 0;
         while (left[node] >= 0) {
             int l = left[node];
             int r = right[node];
-            node = distance.compute(point, centroids[l]) <= distance.compute(point, centroids[r]) ? l : r;
+            node = distance.compute(features, centroids[l]) <= distance.compute(features, centroids[r]) ? l : r;
         }
         return leafId[node];
     }
@@ -60,8 +59,8 @@ public class BisectingKMeansModel implements Model {
     }
 
     /** Leaf centroids in cluster-id order. */
-    public double[][] clusterCentroids() {
-        double[][] out = new double[numClusters()][];
+    public DenseVector[] clusterCentroids() {
+        DenseVector[] out = new DenseVector[numClusters()];
         for (int node = 0; node < leafId.length; node++) {
             if (leafId[node] >= 0) {
                 out[leafId[node]] = centroids[node];

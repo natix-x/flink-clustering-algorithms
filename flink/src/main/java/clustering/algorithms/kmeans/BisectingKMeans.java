@@ -1,6 +1,7 @@
 package clustering.algorithms.kmeans;
 
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import clustering.core.Clusterer;
 import clustering.core.EnvFactory;
 import clustering.core.EuclideanGeometry;
@@ -13,7 +14,6 @@ import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.iteration.DataStreamList;
@@ -209,7 +209,7 @@ public class BisectingKMeans implements Clusterer {
                        IterationListener<Partial> {
 
         private final DistanceMetric distance;
-        private transient ListStateWithCache<double[]> points;
+        private transient ListStateWithCache<DenseVector> points;
         private transient ListState<State> stateList;
 
         SplitFold(DistanceMetric distance) {
@@ -222,7 +222,7 @@ public class BisectingKMeans implements Clusterer {
             stateList = context.getOperatorStateStore()
                 .getListState(new ListStateDescriptor<>("bisecting-state", STATE_TYPE));
             points = new ListStateWithCache<>(
-                PrimitiveArrayTypeInfo.DOUBLE_PRIMITIVE_ARRAY_TYPE_INFO.createSerializer(getExecutionConfig()),
+                DenseVectorTypeInfo.INSTANCE.createSerializer(getExecutionConfig()),
                 getContainingTask(),
                 getRuntimeContext(),
                 context,
@@ -237,8 +237,7 @@ public class BisectingKMeans implements Clusterer {
 
         @Override
         public void processElement1(StreamRecord<DenseVector> record) throws Exception {
-            // Unwrap at the boundary: cache, state serializer and the scan all use the raw array.
-            points.add(record.getValue().values);
+            points.add(record.getValue());
         }
 
         @Override
@@ -273,19 +272,19 @@ public class BisectingKMeans implements Clusterer {
 
         /** Global coordinate sum + count: the root centroid. */
         private void foldGlobalMean(Partial p) throws Exception {
-            for (double[] x : points.get()) {
+            for (DenseVector x : points.get()) {
                 if (p.sums == null) {
-                    p.sums = new double[2][x.length];
+                    p.sums = new double[2][x.size()];
                 }
-                addInto(p.sums[0], x);
+                addInto(p.sums[0], x.values);
                 p.counts[0]++;
             }
         }
 
         /** The target leaf's row count plus a bounded prefix of its points, for seeding. */
         private void foldSeedSample(State s, Partial p) throws Exception {
-            List<double[]> sample = new ArrayList<>();
-            for (double[] x : points.get()) {
+            List<DenseVector> sample = new ArrayList<>();
+            for (DenseVector x : points.get()) {
                 if (leafOf(x, s, distance) == s.targetNode) {
                     p.counts[0]++;
                     if (sample.size() < SEED_SAMPLE_CAP) {
@@ -293,26 +292,26 @@ public class BisectingKMeans implements Clusterer {
                     }
                 }
             }
-            p.sample = sample.toArray(new double[0][]);
+            p.sample = sample.toArray(new DenseVector[0]);
         }
 
         /** 2-means partials over the target leaf only: per branch count, coordinate sum and
          *  cost sum d^2 (the split criterion). */
         private void foldSplit(State s, Partial p) throws Exception {
-            double[][] split = s.splitCentroids;
-            for (double[] x : points.get()) {
+            DenseVector[] split = s.splitCentroids;
+            for (DenseVector x : points.get()) {
                 if (leafOf(x, s, distance) != s.targetNode) {
                     continue;
                 }
                 if (p.sums == null) {
-                    p.sums = new double[2][x.length];
+                    p.sums = new double[2][x.size()];
                 }
                 double d0 = distance.compute(x, split[0]);
                 double d1 = distance.compute(x, split[1]);
                 // Ties go to branch 0, matching the model's left-going tie rule.
                 int branch = d0 <= d1 ? 0 : 1;
                 double d = branch == 0 ? d0 : d1;
-                addInto(p.sums[branch], x);
+                addInto(p.sums[branch], x.values);
                 p.counts[branch]++;
                 p.costs[branch] += d * d;
             }
@@ -378,7 +377,7 @@ public class BisectingKMeans implements Clusterer {
             long[] counts = new long[2];
             double[] costs = new double[2];
             double[][] sums = null;
-            List<double[]> sample = new ArrayList<>();
+            List<DenseVector> sample = new ArrayList<>();
             for (Partial p : buffer) {
                 counts[0] += p.counts[0];
                 counts[1] += p.counts[1];
@@ -392,7 +391,7 @@ public class BisectingKMeans implements Clusterer {
                     addInto(sums[1], p.sums[1]);
                 }
                 if (p.sample != null) {
-                    for (double[] x : p.sample) {
+                    for (DenseVector x : p.sample) {
                         if (sample.size() < SEED_SAMPLE_CAP) {
                             sample.add(x);
                         }
@@ -441,14 +440,14 @@ public class BisectingKMeans implements Clusterer {
         }
 
         /** Turn the target leaf's sample into the two split seeds. */
-        private Update startSplit(State s, long targetRows, List<double[]> sample) {
+        private Update startSplit(State s, long targetRows, List<DenseVector> sample) {
             State next = s.copy();
             leafCount.put(s.targetNode, targetRows);
             if (sample.size() < 2) {
                 // Fewer than two rows, or all rows identical -> nothing to bisect.
                 return afterLeafSettled(next, s.targetNode, true);
             }
-            double[][] seeds = seedFrom(sample);
+            DenseVector[] seeds = seedFrom(sample);
             if (seeds == null) {
                 return afterLeafSettled(next, s.targetNode, true);
             }
@@ -466,26 +465,27 @@ public class BisectingKMeans implements Clusterer {
          *  well-separated seeds need no RNG, cannot draw the same point twice, and make the
          *  split reproducible without a shuffle. Returns {@code null} when every sampled point
          *  coincides with the first — the leaf is then unsplittable. */
-        private double[][] seedFrom(List<double[]> sample) {
+        private DenseVector[] seedFrom(List<DenseVector> sample) {
             DistanceMetric metric = geometry.fitDistance();
-            double[] first = sample.get(0);
-            double[] farthest = null;
+            DenseVector first = sample.get(0);
+            DenseVector farthest = null;
             double best = 0.0;
-            for (double[] x : sample) {
+            for (DenseVector x : sample) {
                 double d = metric.compute(first, x);
                 if (d > best) {
                     best = d;
                     farthest = x;
                 }
             }
-            return farthest == null ? null : new double[][] {first.clone(), farthest.clone()};
+            return farthest == null ? null : new DenseVector[] {
+                new DenseVector(first.values.clone()), new DenseVector(farthest.values.clone())};
         }
 
         /** One 2-means round on the target leaf; on convergence the next round is the COMMIT
          *  pass, which re-measures the converged split exactly. */
         private Update lloydRound(State s, long[] counts, double[][] sums) {
             State next = s.copy();
-            double[][] split = new double[2][];
+            DenseVector[] split = new DenseVector[2];
             for (int b = 0; b < 2; b++) {
                 split[b] = counts[b] == 0L || sums == null
                     ? s.splitCentroids[b]
@@ -623,14 +623,14 @@ public class BisectingKMeans implements Clusterer {
      *  Flat arrays sized for the final tree (2k-1 nodes); {@code left[i] &lt; 0} marks a leaf. */
     public static final class State implements Serializable {
         public int phase;
-        public double[][] centroid;
+        public DenseVector[] centroid;
         public int[] left;
         public int[] right;
         public int nodeCount;
         /** Leaf node currently being bisected, {@code -1} when none. */
         public int targetNode;
         /** The two centroids of the split in progress, {@code null} between splits. */
-        public double[][] splitCentroids;
+        public DenseVector[] splitCentroids;
         /** Cluster id per node, filled only in the final state ({@code -1} = internal). */
         public int[] leafId;
 
@@ -641,7 +641,7 @@ public class BisectingKMeans implements Clusterer {
             s.phase = PHASE_INIT_MEAN;
             // Grown by exactly the nodes that exist: Flink's array serializers are happier
             // without null holes than a pre-sized 2k-1 buffer would be.
-            s.centroid = new double[0][];
+            s.centroid = new DenseVector[0];
             s.left = new int[0];
             s.right = new int[0];
             s.nodeCount = 0;
@@ -685,7 +685,7 @@ public class BisectingKMeans implements Clusterer {
         public long[] counts;
         public double[][] sums;
         public double[] costs;
-        public double[][] sample;
+        public DenseVector[] sample;
         public State state;
 
         public Partial() {}
@@ -703,7 +703,7 @@ public class BisectingKMeans implements Clusterer {
 
     /** Cluster-tree walk: at each internal node follow the closer child centroid (ties left),
      *  exactly as {@link BisectingKMeansModel#predict} does. */
-    static int leafOf(double[] p, State s, DistanceMetric distance) {
+    static int leafOf(DenseVector p, State s, DistanceMetric distance) {
         int node = 0;
         while (s.left[node] >= 0) {
             int l = s.left[node];
@@ -719,11 +719,11 @@ public class BisectingKMeans implements Clusterer {
         }
     }
 
-    private static double[] mean(double[] sum, long count) {
+    private static DenseVector mean(double[] sum, long count) {
         double[] c = new double[sum.length];
         for (int d = 0; d < sum.length; d++) {
             c[d] = sum[d] / count;
         }
-        return c;
+        return new DenseVector(c);
     }
 }

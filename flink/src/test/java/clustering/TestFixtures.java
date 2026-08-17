@@ -4,6 +4,7 @@ import clustering.core.EnvFactory;
 import clustering.core.Model;
 import clustering.core.PointSource;
 import clustering.core.Points;
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.distance.DistanceMetric;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
@@ -71,11 +72,11 @@ public final class TestFixtures {
     }
 
     /** phi(C, X) = sum over points of d(x, nearest prototype)^2 — for comparing two fits. */
-    public static double totalError(Model model, List<double[]> points, double[][] prototypes,
+    public static double totalError(Model model, List<double[]> points, DenseVector[] prototypes,
                                     DistanceMetric distance) {
         double total = 0.0;
         for (double[] p : points) {
-            double d = distance.compute(p, prototypes[model.predict(Points.wrap(p))]);
+            double d = distance.compute(p, prototypes[model.predict(Points.wrap(p))].values);
             total += d * d;
         }
         return total;

@@ -44,7 +44,7 @@ public final class SphericalGeometry implements Geometry {
     }
 
     @Override
-    public double[] project(double[] centroid) {
-        return Geometry.l2Normalize(centroid);
+    public DenseVector project(DenseVector centroid) {
+        return new DenseVector(Geometry.l2Normalize(centroid.values));
     }
 }

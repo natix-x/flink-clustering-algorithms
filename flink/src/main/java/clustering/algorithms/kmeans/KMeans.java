@@ -1,5 +1,6 @@
 package clustering.algorithms.kmeans;
 
+import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Clusterer;
 import clustering.core.EnvFactory;
 import clustering.core.EuclideanGeometry;
@@ -46,8 +47,8 @@ public class KMeans implements Clusterer {
     @Override
     public KMeansModel fit(PointSource source, EnvFactory envs, int parallelism) {
         PointSource prepared = geometry.prepare(source);
-        double[][] init = CentroidIteration.sampleInitialCentroids(prepared, envs, k, seed);
-        double[][] centroids = CentroidIteration.run(
+        DenseVector[] init = CentroidIteration.sampleInitialCentroids(prepared, envs, k, seed);
+        DenseVector[] centroids = CentroidIteration.run(
             prepared, envs, init, geometry.fitDistance(),
             new LloydDriver(geometry, maxIter, eps), "kmeans-fit");
         logger.debug("kmeans: k={} geometry={} maxIter={} eps={}", k, geometry.name(), maxIter, eps);
@@ -74,7 +75,7 @@ public class KMeans implements Clusterer {
 
         @Override
         public CentroidIteration.Decision nextRound(int epoch, CentroidIteration.RoundStats stats) {
-            double[][] next = stats.means(geometry);
+            DenseVector[] next = stats.means(geometry);
             double movement = CentroidIteration.maxMovement(stats.centroids, next, geometry.fitDistance());
             boolean stop = movement < eps || epoch >= maxIter - 1;
             if (stop) {

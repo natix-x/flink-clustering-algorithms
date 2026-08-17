@@ -1,12 +1,30 @@
 package clustering.distance;
 
+import org.apache.flink.ml.linalg.DenseVector;
+
 import java.io.Serializable;
 
 /** A distance between two feature vectors. Java mirror of the Spark repo's
- *  {@code clustering.distance.DistanceMetric}. */
+ *  {@code clustering.distance.DistanceMetric}.
+ *
+ *  <h3>Two entry points, one kernel</h3>
+ *  {@link #compute(DenseVector, DenseVector)} is the seam every algorithm uses — the same
+ *  signature the Spark side has, over that engine's own vector type. It delegates to the raw
+ *  {@code double[]} kernel through {@link DenseVector#values}, which is the vector's OWN array,
+ *  so the delegation copies nothing and allocates nothing.
+ *
+ *  The array form stays public for callers whose data is flat by construction (the driver-local
+ *  distance matrices, the ε-scans): wrapping those in vectors just to unwrap them again inside
+ *  the loop would allocate per comparison — the exact anti-pattern that cost 5x when the ε-scan
+ *  unpacked coordinates per comparison instead of per row. */
 public interface DistanceMetric extends Serializable {
 
     double compute(double[] a, double[] b);
+
+    /** Vector-typed seam, mirroring the Spark {@code compute(Vector, Vector)}. */
+    default double compute(DenseVector a, DenseVector b) {
+        return compute(a.values, b.values);
+    }
 
     /** {@code d(a, b) <= radius}, for callers that only need the PREDICATE and never the distance.
      *

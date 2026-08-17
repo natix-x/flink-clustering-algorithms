@@ -87,7 +87,7 @@ public class CLARA implements Clusterer {
 
     /** One distributed Flink job: total assignment cost (sum over all points of the
      *  distance to the nearest medoid). */
-    private double evaluateCost(PointSource source, EnvFactory envs, double[][] medoids) {
+    private double evaluateCost(PointSource source, EnvFactory envs, DenseVector[] medoids) {
         StreamExecutionEnvironment env = envs.newEnv();
         DataStream<Double> totals = source.create(env)
             .map(new NearestMedoidDistance(medoids, distance)).returns(Types.DOUBLE)
@@ -123,20 +123,19 @@ public class CLARA implements Clusterer {
     /** Maps a point to its distance to the nearest medoid. */
     private static final class NearestMedoidDistance
             implements org.apache.flink.api.common.functions.MapFunction<DenseVector, Double> {
-        private final double[][] medoids;
+        private final DenseVector[] medoids;
         private final DistanceMetric distance;
 
-        NearestMedoidDistance(double[][] medoids, DistanceMetric distance) {
+        NearestMedoidDistance(DenseVector[] medoids, DistanceMetric distance) {
             this.medoids = medoids;
             this.distance = distance;
         }
 
         @Override
         public Double map(DenseVector features) {
-            double[] point = features.values;
             double min = Double.MAX_VALUE;
-            for (double[] medoid : medoids) {
-                double d = distance.compute(point, medoid);
+            for (DenseVector medoid : medoids) {
+                double d = distance.compute(features, medoid);
                 if (d < min) {
                     min = d;
                 }
