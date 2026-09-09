@@ -23,26 +23,46 @@ engine-agnostic and live in the shared repo: [`clustering-algorithms-benchmark`]
 
 > **Note:** Some documentation and diagrams are in Polish, as the master thesis they accompany is written in Polish.
 
-Implemented algorithms:
-TODO: ADD DESCRIPTIONS/DIAGRAMS/WHAT CAN BE CONFIGURED HERE
+## Implemented algorithms
 
-| registry name | what it is | params (defaults) |
-|---|---|---|
-| `kmeans` | Lloyd k-means, or spherical k-means (Dhillon & Modha 2001) via `geometry`; `refine: breathing` swaps the plain Lloyd run for Fritzke's breathing cycle around the identical loop | `k`, `maxIter` (100), `eps` (1e-4), `seed` (42), `geometry: euclidean\|spherical` (euclidean), `refine: none\|breathing` (none), `m0` (5), `maxCycles` (100) |
-| `bisectingkmeans` | divisive: split the highest-cost leaf with 2-means until k leaves; tree model, root-to-leaf labelling | `k`, `maxIter` (20), `eps` (1e-4), `seed` (42), `geometry` |
-| `pam` / `fastpam` | classic k-medoids and its FastPAM1 swap, driver-local O(n²) | `k`, `maxIter` (100), `distance` |
-| `distpam` / `distfastpam` | the same two swaps with the O(n²) work distributed (naive vs FastPAM1 — the speedup baseline pair) | `k`, `maxIter` (100), `distance` |
-| `clara` / `claraflip` | PAM on random samples; `claraflip` runs the whole multi-sample search as ONE Flink job | `k`, `numSamples` (5), `sampleSize` (1000), `maxIter` (100), `distance` |
-| `dbscanpp` | DBSCAN++ (Jang & Jiang, ICML 2019): sampled candidate cores, densities counted exactly against the full dataset | `eps`, `minPts`, `coreSampleFraction`, `sampling: uniform\|linspace\|kcenter` (uniform), `poolFactor` (4), `assign: eps\|closest` (eps), `chunkSize` (2000), `distance`, `seed` (42) |
-| `dbscanexact` | exact classic DBSCAN — the `dbscanpp` code path with `coreSampleFraction` pinned to 1.0; the exactness oracle for small data, validated against a textbook DBSCAN in `DBSCANppSpec` | `eps`, `minPts`, `assign` (eps), `chunkSize` (2000), `distance`, `seed` (42) |
+Registry name (`config.algorithm.name`) → factory in
+[`AlgorithmRegistry.java`](flink/src/main/java/clustering/benchmark/registry/AlgorithmRegistry.java):
+
+- **`kmeans`** — Lloyd's k-means, `geometry: euclidean|spherical`, `refine: none|breathing`.
+  [`KMeans.java`](flink/src/main/java/clustering/algorithms/kmeans/KMeans.java) ·
+  [`BreathingKMeans.java`](flink/src/main/java/clustering/algorithms/kmeans/BreathingKMeans.java) ·
+  [`CentroidIteration.java`](flink/src/main/java/clustering/algorithms/kmeans/CentroidIteration.java)
+- **`bisectingkmeans`** — divisive 2-means tree.
+  [`BisectingKMeans.java`](flink/src/main/java/clustering/algorithms/kmeans/hierarchical/BisectingKMeans.java)
+- **`fastpam` / `fasterpam`** — driver-local k-medoids: FastPAM1's exact swap and FasterPAM's eager swap.
+  [`FastPAM.java`](flink/src/main/java/clustering/algorithms/kmedoids/local/FastPAM.java) ·
+  [`FasterPAM.java`](flink/src/main/java/clustering/algorithms/kmedoids/local/FasterPAM.java)
+- **`distfastpam`** — distributed FastPAM1 k-medoids, one FLIP-176 job.
+  [`DistributedFastPAM.java`](flink/src/main/java/clustering/algorithms/kmedoids/distributed/DistributedFastPAM.java)
+- **`clara`** — PAM over random samples, `inner: fastpam|fasterpam`.
+  [`CLARA.java`](flink/src/main/java/clustering/algorithms/kmedoids/hybrid/CLARA.java) ·
+  [`MedoidSearch.java`](flink/src/main/java/clustering/algorithms/kmedoids/hybrid/MedoidSearch.java)
+- **`pamae`** — CLARA seeding + distributed Voronoi refinement (PAMAE, KDD 2017).
+  [`PAMAE.java`](flink/src/main/java/clustering/algorithms/kmedoids/hybrid/PAMAE.java)
+- **`dbscanpp`** (exact classic DBSCAN at `coreSampleFraction: 1.0` — no separate registry
+  entry) — DBSCAN++, ε-neighbour counting + ε-graph, driver-local union-find.
+  [`DBSCANpp.java`](flink/src/main/java/clustering/algorithms/dbscan/DBSCANpp.java)
+
+Evaluation metrics (`config.evaluation.metrics`):
+[`SilhouetteEvaluator.java`](flink/src/main/java/clustering/evaluation/SilhouetteEvaluator.java) ·
+[`DaviesBouldinEvaluator.java`](flink/src/main/java/clustering/evaluation/DaviesBouldinEvaluator.java) ·
+[`CalinskiHarabaszEvaluator.java`](flink/src/main/java/clustering/evaluation/CalinskiHarabaszEvaluator.java)
 
 The k-means family takes no `distance`: the centroid update is an arithmetic mean, which is
 only geometry-consistent under its own geometry's metric, so `geometry` fixes the metric
 (euclidean → L2, spherical → cosine on the unit sphere). Evaluation then reuses that metric.
 
-Point weights are a Spark-side feature (optional `weight` column) with no counterpart in the
-Flink seam, where a point carries coordinates only. Every statistic here is therefore unweighted —
-identical to a Spark run whose input carries no weight column.
+Point weights are supported here as on the Spark side: the stream record is a `WeightedPoint`
+(coordinates + weight) and `ParquetDataSource` fills the weight from an optional `weightColumn`,
+defaulting to 1.0 when the config names none — so an unweighted run is exactly the unit-weight
+weighted run, and old configs are unaffected. Every algorithm honours it (k-means' weighted mean,
+the medoid ladder's weighted Δ and cost, DBSCAN++'s `minPts` as a MASS threshold), and the
+invariant "weighting == duplication" is pinned by `WeightedClusteringSpec`.
 
 The stream record is `org.apache.flink.ml.linalg.DenseVector` (from `flink-ml-servable-core`;
 `flink-ml-core` declares that artifact `provided`, hence the explicit dependency), the Flink
@@ -113,10 +133,10 @@ The pipeline is assembled from config strings by three registries (all sharing a
 algorithm, data source, or metric is one factory entry — the runner never changes:
 
 - **`AlgorithmRegistry`** — `config.algorithm.name` → `Clusterer` factory (kmeans /
-  bisectingkmeans / pam / fastpam / distpam / distfastpam / clara / claraflip / dbscanpp /
-  dbscanexact). It returns a `Built` pair — the clusterer **and** the metric it actually runs
-  with — so evaluation cannot silently score a fit with a different metric than it was made in.
-- **`DataSourceRegistry`** — `config.dataset.type` → `DataSource` factory (synthetic; Parquet planned).
+  bisectingkmeans / fastpam / fasterpam / distfastpam / clara / pamae / dbscanpp). It returns
+  a `Built` pair — the clusterer **and** the metric it actually runs with — so evaluation
+  cannot silently score a fit with a different metric than it was made in.
+- **`DataSourceRegistry`** — `config.dataset.type` → `DataSource` factory (synthetic / Parquet).
 - **`DistanceRegistry`** — `params.distance` → `DistanceMetric` (Euclidean / Manhattan / Cosine).
 - **`GeometryRegistry`** — `params.geometry` → `Geometry` (euclidean / spherical), the space a
   centroid algorithm optimises in; it decides the metric, so the k-means family reads no
@@ -147,7 +167,15 @@ the job.
 - **Distributed:** each round, a parallel fold emits per-subtask partial aggregates (k-sized)
   and the single-task combiner merges them. The distance work scales with parallelism, like Spark.
 - **Memory-safe:** the fold caches its local points in a `ListStateWithCache` (memory + disk
-  spill, same as flink-ml's KMeans), so datasets larger than worker heap don't OOM.
+  spill, same as flink-ml's KMeans), so datasets larger than worker heap don't OOM. That cache
+  is scoped to ONE env/job, though — it cannot help the `load`→`fit`→`eval` boundary, or any
+  algorithm that is by design several sequential jobs (CLARA's sample/cost rounds, PAMAE's
+  seeding + refinement, `dbscanpp`'s candidate/ε phases). For that,
+  [`MaterializedPointSource`](flink/src/main/java/clustering/core/MaterializedPointSource.java)
+  reads the original source ONCE and writes it to shared-storage Parquet, so every later job
+  reads that small local copy instead of re-invoking the original connector (synthetic
+  generation, Parquet re-partitioning, a network-bound read) — the Flink analogue of Spark's
+  `persist(MEMORY_AND_DISK)+count()`.
 - **Early termination:** the combiner emits a "continue" token only while it wants another
   round — convergence (max centroid move < `eps`) or `maxIter`, whichever comes first.
 - **Deterministic & reproducible:** initial centroids come from a deterministic head
@@ -171,11 +199,12 @@ engine can express, and the asymmetries are results worth reporting:
 | `kmeans` + `refine: breathing` | one distributed job per Lloyd iteration, plus a statistics job per breathing phase | one job for the entire search; error/utility statistics come free from the same scan as the mean update, at the cost of one extra measuring pass per phase transition (so SSE comparisons stay exact) |
 | `bisectingkmeans` | materialises (`persist`) each leaf's point subset and runs a fresh k-means per split | one job: points cached once, the CLUSTER TREE travels the feedback edge and a point's leaf is a root-to-leaf walk — no leaf subset is ever written or re-derived |
 | `dbscanpp` step 2 (ε-counting) | candidates broadcast in chunks, ONE JOB (= one full pass over the data) PER CHUNK | chunks are ROUNDS of one job: only the current chunk crosses the feedback edge, so chunking still bounds per-subtask memory but the data is read exactly once |
+| `pamae` | three jobs — CLARA seeding, a Bernoulli draw for the candidate pool, then the refinement loop — which is its optimum there: a Spark job is cheap and `persist` survives between them | ONE job: the pool is drawn in the same pass as CLARA's samples and the refinements are further rounds over the same point cache, so the source is read once however many refinement passes are asked for |
+| `distfastpam` | candidates come from a `collect()` off the persisted DataFrame; one job per BUILD/SWAP round | ONE job: round 0 gathers the candidates from the point cache itself, so the second full read (and the parallelism-1 collect it used to be taken at) is gone. Its `n·(k+1)`-double round partials additionally fold through a merge stage — contiguous subtask GROUPS first, driver last — which is the Flink counterpart of Spark's `aggregateDoublesOrdered` and equally order-pinned |
 | `dbscanpp` step 3 (ε-graph) | the m²/2 edge scan is cut into row blocks whose size is estimated from the expected edge count, because `collect` materialises a block; a dense graph is refused the cluster and falls back to the driver | one job, edges **streamed** into the union-find through the back-pressured collect iterator: no blocks, no size estimate, and no density at which the phase has to give up the cluster |
 
 Driver-local by design in both engines (and for the same reason — it is O(m) or O(m²) over a
-bounded candidate set, not over the data): the `dbscanpp` union-find, the `kcenter` traversal, and
-PAM on a CLARA sample. The `dbscanpp` ε-graph EDGE SCAN is the exception — it goes to the cluster,
+bounded candidate set, not over the data): the `dbscanpp` union-find and PAM on a CLARA sample. The `dbscanpp` ε-graph EDGE SCAN is the exception — it goes to the cluster,
 but only when the cluster can actually help. Measured on one 12-core machine (m = 100 000, 3-D,
 sparse graph): driver-local 5.0 s vs distributed 21.9 s, because the driver-local path already uses
 every core the driver has. So the path is chosen from (a) whether the scan keeps the driver busy for
@@ -248,9 +277,10 @@ dataset on a local MiniCluster and asserts the emitted `RunResult` — an `ok` r
 Per-algorithm suites (`*Spec`, counterparts of the Spark repo's ScalaTest specs) run on the
 same MiniCluster: `KMeansSpec` (blob recovery, the `geometry` knob, reproducibility),
 `BreathingKMeansSpec` (breathing must escape a local minimum plain Lloyd is stuck in, not just
-run), `BisectingKMeansSpec`, `UnionFindSpec`, and `DBSCANppSpec` — which pins `dbscanexact`
-against a textbook DBSCAN written from the definition inside the test, so "exact" is a checked
-claim in both engines and not an agreement between two distributed implementations.
+run), `BisectingKMeansSpec`, `UnionFindSpec`, and `DBSCANppSpec` — which pins `dbscanpp` at
+`coreSampleFraction: 1.0` against a textbook DBSCAN written from the definition inside the
+test, so "exact" is a checked claim in both engines and not an agreement between two
+distributed implementations.
 
 ```bash
 cd flink
