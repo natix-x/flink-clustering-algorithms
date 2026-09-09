@@ -3,7 +3,6 @@ package clustering.metrics;
 import org.apache.flink.metrics.MetricConfig;
 import org.apache.flink.metrics.reporter.MetricReporter;
 import org.apache.flink.metrics.reporter.MetricReporterFactory;
-
 import java.util.Properties;
 
 /** Factory for {@link FileMetricReporter}. Referenced from the Flink config:
