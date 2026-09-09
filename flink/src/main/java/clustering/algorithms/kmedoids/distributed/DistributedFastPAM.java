@@ -1,68 +1,54 @@
 package clustering.algorithms.kmedoids.distributed;
 
-import clustering.algorithms.kmeans.CentroidIteration;
 import clustering.algorithms.kmedoids.KMedoidsModel;
+import clustering.algorithms.kmedoids.components.MedoidIteration;
 import clustering.algorithms.kmedoids.components.SwapMove;
-import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Clusterer;
-import clustering.core.Datasets;
 import clustering.core.EnvFactory;
-import clustering.core.FlinkJobs;
-import clustering.core.ManagedMemory;
 import clustering.core.Model;
 import clustering.core.PointSource;
-import clustering.core.WeightedPoint;
-import clustering.core.WeightedPointTypeInfo;
 import clustering.core.Points;
+import clustering.core.WeightedPoint;
 import clustering.distance.DistanceMetric;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.state.ListState;
-import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.iteration.DataStreamList;
-import org.apache.flink.iteration.IterationBody;
-import org.apache.flink.iteration.IterationBodyResult;
-import org.apache.flink.iteration.IterationConfig;
-import org.apache.flink.iteration.IterationListener;
-import org.apache.flink.iteration.Iterations;
-import org.apache.flink.iteration.ReplayableDataStreamList;
-import org.apache.flink.iteration.datacache.nonkeyed.ListStateWithCache;
-import org.apache.flink.iteration.operator.OperatorStateUtils;
-import org.apache.flink.runtime.state.StateInitializationContext;
-import org.apache.flink.runtime.state.StateSnapshotContext;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
-import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.util.Collector;
+import org.apache.flink.ml.linalg.DenseVector;
 
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Optional;
 
 /**
- * Distributed FastPAM training (BUILD + SWAP) executed as a single Flink ML bounded-iteration job.
- * Avoids per-round job submission overhead by caching points locally and cycling medoid state.
+ * Distributed FastPAM1 (BUILD + SWAP) as a single Flink ML bounded-iteration job.
+ *
+ * <p>Every point is a candidate medoid, so a round's accumulator is the FastPAM1 decomposition
+ * {@code shared[n] + removeLoss[n·k]} and one round applies the single best improving swap.
+ *
+ * <h3>The candidates are gathered by the job, not handed to it</h3>
+ * The candidate array used to be built by a {@code Datasets.collectAll} before the job: a SECOND
+ * full read of the source, taken at parallelism 1, whose only purpose was to put {@code n·d} doubles
+ * in the operator's closure — from where Flink shipped them to every subtask anyway. Round 0 now
+ * gathers them from the point cache instead and publishes them on the feedback edge, so the
+ * broadcast volume is unchanged and the extra read and the single-threaded collect are gone.
+ *
+ * <p>The price is that candidate ORDER becomes subtask-major rather than source order, which moves
+ * tie-breaking. Run-to-run reproducibility is untouched (partials are folded in ascending subtask
+ * order), and cross-engine identity was never available here anyway — Spark's candidate array is in
+ * partition order, which is not the Flink source order either.
+ *
+ * <h3>Why this one folds through a tree</h3>
+ * Its partial is {@code n·(k+1)} doubles — 880 KB per subtask at n = 10 000, k = 10, i.e. 56 MB per
+ * round arriving at ONE task at parallelism 64, for every BUILD and SWAP round of the run. The
+ * iteration therefore runs with a merge stage: contiguous groups of {@link #MERGE_FAN_IN} subtasks
+ * are folded first, cutting what reaches the driver by that factor. Groups are subtask RANGES and a
+ * group is never split across merge tasks, so the fold order is still fixed by slot index and the
+ * result is bit-identical to the flat fold.
  */
 public class DistributedFastPAM implements Clusterer {
 
-    private static final Logger logger = LoggerFactory.getLogger(DistributedFastPAM.class);
+    private static final int PHASE_GATHER = 0;
+    private static final int PHASE_SEARCH = 1;
 
-    private static final TypeInformation<IterationState> STATE_TYPE = TypeInformation.of(IterationState.class);
-    private static final TypeInformation<PartialStats> PARTIAL_TYPE = TypeInformation.of(PartialStats.class);
-    private static final TypeInformation<IterationUpdate> UPDATE_TYPE = TypeInformation.of(IterationUpdate.class);
+    /** Subtasks per pre-fold group. See the class doc. */
+    private static final int MERGE_FAN_IN = 8;
 
     private final int targetK;
     private final int maxIterations;
@@ -76,194 +62,140 @@ public class DistributedFastPAM implements Clusterer {
 
     @Override
     public Model fit(PointSource source, EnvFactory envFactory, int parallelism) {
-        double[][] candidateCoords = Points.toArray(Datasets.collectAll(source, envFactory));
-        int numCandidates = candidateCoords.length;
+        FastPamState initial = new FastPamState();
+        initial.phase = PHASE_GATHER;
 
-        if (numCandidates < targetK) {
-            throw new IllegalArgumentException(
-                "Dataset too small: n=" + numCandidates + " points but k=" + targetK + " medoids requested.");
+        FastPamState finalState = MedoidIteration.execute(
+            source, envFactory, "distfastpam-fit",
+            initial, FastPamState.class, FastPamPartial.class,
+            new FastPamLogic(targetK, maxIterations, distanceMetric),
+            MERGE_FAN_IN);
+
+        if (finalState == null || finalState.bestMedoids == null) {
+            throw new IllegalStateException("distfastpam produced no medoids");
         }
 
-        StreamExecutionEnvironment env = envFactory.newEnv();
-        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-
-        DataStream<IterationState> initStateStream =
-            env.fromCollection(java.util.Collections.singletonList(IterationState.initialize(targetK)), STATE_TYPE);
-        DataStream<WeightedPoint> pointsStream = source.create(env);
-
-        DataStreamList iterationResult = Iterations.iterateBoundedStreamsUntilTermination(
-            DataStreamList.of(initStateStream),
-            ReplayableDataStreamList.notReplay(pointsStream),
-            IterationConfig.newBuilder().build(),
-            new FastPamIterationBody(candidateCoords, targetK, maxIterations, distanceMetric));
-
-        IterationState finalState = FlinkJobs.last(iterationResult.<IterationState>get(0), "distfastpam-fit");
-
-        int[] finalMedoids = (finalState == null) ? generateInitialIndices(numCandidates, targetK) : finalState.medoids;
         DenseVector[] medoidVectors = new DenseVector[targetK];
         for (int i = 0; i < targetK; i++) {
-            medoidVectors[i] = new DenseVector(candidateCoords[finalMedoids[i]]);
+            medoidVectors[i] = Points.wrap(finalState.bestMedoids[i]);
         }
         return new KMedoidsModel(medoidVectors, distanceMetric);
     }
 
-    private static final class FastPamIterationBody implements IterationBody {
-        private final double[][] candidateCoords;
+    public static final class FastPamState extends MedoidIteration.State {
+        public int phase;
+        /** All candidates; published on the ONE round that enters the search, null afterwards. */
+        public double[][] candidates;
+        public int[] medoids;
+        public int numSelected;
+        public int completedSwapRounds;
+        public double[][] bestMedoids;
+
+        public FastPamState() {}
+
+        FastPamState copy() {
+            FastPamState copy = new FastPamState();
+            copy.phase = phase;
+            copy.medoids = medoids == null ? null : medoids.clone();
+            copy.numSelected = numSelected;
+            copy.completedSwapRounds = completedSwapRounds;
+            copy.bestMedoids = bestMedoids;
+            return copy;
+        }
+    }
+
+    public static final class FastPamPartial extends MedoidIteration.Partial {
+        /** GATHER round: this subtask's points, in cache order. */
+        public double[][] gathered;
+        /** BUILD / SWAP round: the FastPAM1 accumulator. */
+        public double[] sums;
+
+        public FastPamPartial() {}
+    }
+
+    private static final class FastPamLogic
+            implements MedoidIteration.RoundLogic<FastPamState, FastPamPartial> {
+
         private final int targetK;
         private final int maxIterations;
         private final DistanceMetric distanceMetric;
 
-        FastPamIterationBody(double[][] candidateCoords, int targetK, int maxIterations, DistanceMetric distanceMetric) {
-            this.candidateCoords = candidateCoords;
+        /** Per-subtask memo, so the candidates are broadcast once and not once per round. */
+        private transient double[][] candidates;
+
+        FastPamLogic(int targetK, int maxIterations, DistanceMetric distanceMetric) {
             this.targetK = targetK;
             this.maxIterations = maxIterations;
             this.distanceMetric = distanceMetric;
         }
 
         @Override
-        public IterationBodyResult process(DataStreamList variableStreams, DataStreamList dataStreams) {
-            DataStream<IterationState> stateStream = variableStreams.get(0);
-            DataStream<WeightedPoint> pointsStream = dataStreams.get(0);
+        public FastPamPartial computePartial(
+                int round, FastPamState state, Iterable<WeightedPoint> points, int subtaskId) {
 
-            DataStream<PartialStats> partialStats = pointsStream
-                .connect(stateStream.broadcast())
-                .transform("dfastpam-partial", PARTIAL_TYPE, new PartialAggregator(candidateCoords, targetK, distanceMetric));
-
-            ManagedMemory.forPointCache(partialStats);
-
-            DataStream<IterationUpdate> updates = partialStats
-                .flatMap(new StatsCombiner(candidateCoords.length, targetK, maxIterations))
-                .setParallelism(1)
-                .returns(UPDATE_TYPE);
-
-            DataStream<IterationState> newState = updates
-                .map((MapFunction<IterationUpdate, IterationState>) update -> update.state)
-                .returns(STATE_TYPE)
-                .setParallelism(1);
-
-            DataStream<Integer> terminationSignal = updates
-                .flatMap(new TerminationEvaluator())
-                .returns(Types.INT)
-                .setParallelism(1);
-
-            return new IterationBodyResult(
-                DataStreamList.of(newState),
-                DataStreamList.of(newState),
-                terminationSignal);
-        }
-    }
-
-    /**
-     * Parallel per-subtask local aggregation.
-     * Computes partial distance sums for BUILD or SWAP phases based on iteration state.
-     */
-    private static final class PartialAggregator
-            extends AbstractStreamOperator<PartialStats>
-            implements TwoInputStreamOperator<WeightedPoint, IterationState, PartialStats>,
-                       IterationListener<PartialStats> {
-
-        private final double[][] candidateCoords;
-        private final int targetK;
-        private final int numCandidates;
-        private final DistanceMetric distanceMetric;
-        private transient ListStateWithCache<WeightedPoint> cachedPoints;
-        private transient ListState<IterationState> stateList;
-
-        PartialAggregator(double[][] candidateCoords, int targetK, DistanceMetric distanceMetric) {
-            this.candidateCoords = candidateCoords;
-            this.targetK = targetK;
-            this.numCandidates = candidateCoords.length;
-            this.distanceMetric = distanceMetric;
-        }
-
-        @Override
-        public void initializeState(StateInitializationContext context) throws Exception {
-            super.initializeState(context);
-            stateList = context.getOperatorStateStore()
-                .getListState(new ListStateDescriptor<>("dfastpam-state", STATE_TYPE));
-            cachedPoints = new ListStateWithCache<>(
-                WeightedPointTypeInfo.INSTANCE.createSerializer(getExecutionConfig()),
-                getContainingTask(),
-                getRuntimeContext(),
-                context,
-                config.getOperatorID());
-        }
-
-        @Override
-        public void snapshotState(StateSnapshotContext context) throws Exception {
-            super.snapshotState(context);
-            cachedPoints.snapshotState(context);
-        }
-
-        @Override
-        public void processElement1(StreamRecord<WeightedPoint> record) throws Exception {
-            cachedPoints.add(record.getValue());
-        }
-
-        @Override
-        public void processElement2(StreamRecord<IterationState> record) throws Exception {
-            stateList.add(record.getValue());
-        }
-
-        @Override
-        public void onEpochWatermarkIncremented(int epoch, Context context, Collector<PartialStats> out) throws Exception {
-            Optional<IterationState> currentStateOpt = OperatorStateUtils.getUniqueElement(stateList, "dfastpam-state");
-            if (!currentStateOpt.isPresent()) {
-                return;
+            FastPamPartial partial = new FastPamPartial();
+            if (state.phase == PHASE_GATHER) {
+                List<double[]> gathered = new ArrayList<>();
+                for (WeightedPoint point : points) {
+                    // Cached records are reused between rounds, so the coordinates are copied out.
+                    gathered.add(point.features.values.clone());
+                }
+                partial.gathered = gathered.toArray(new double[0][]);
+                return partial;
             }
-            IterationState state = currentStateOpt.get();
-            int subtaskId = getRuntimeContext().getIndexOfThisSubtask();
 
-            double[] partialData = state.numSelected < targetK ? aggregateBuildPhase(state) : aggregateSwapPhase(state);
-
-            PartialStats stats = new PartialStats();
-            stats.subtaskId = subtaskId;
-            stats.accumulatedData = partialData;
-            stats.state = state;
-            out.collect(stats);
-
-            stateList.clear();
+            if (state.candidates != null) {
+                candidates = state.candidates;
+            }
+            partial.sums = state.numSelected < targetK
+                ? aggregateBuildPhase(state, points)
+                : aggregateSwapPhase(state, points);
+            return partial;
         }
 
-        private double[] aggregateBuildPhase(IterationState state) throws Exception {
+        private double[] aggregateBuildPhase(FastPamState state, Iterable<WeightedPoint> points) {
+            int numCandidates = candidates.length;
             double[] accumulator = new double[numCandidates];
+
             if (state.numSelected == 0) {
-                for (WeightedPoint point : cachedPoints.get()) {
+                for (WeightedPoint point : points) {
                     double[] coords = point.features.values;
                     double weight = point.weight;
                     for (int i = 0; i < numCandidates; i++) {
-                        accumulator[i] += weight * distanceMetric.compute(candidateCoords[i], coords);
+                        accumulator[i] += weight * distanceMetric.compute(candidates[i], coords);
                     }
                 }
-            } else {
-                double[][] selectedMedoids = extractSelectedCoordinates(candidateCoords, state.medoids, state.numSelected);
-                for (WeightedPoint point : cachedPoints.get()) {
-                    double[] coords = point.features.values;
-                    double weight = point.weight;
-                    double minDistance = Double.MAX_VALUE;
+                return accumulator;
+            }
 
-                    for (double[] medoid : selectedMedoids) {
-                        double dist = distanceMetric.compute(medoid, coords);
-                        if (dist < minDistance) {
-                            minDistance = dist;
-                        }
+            double[][] selectedMedoids = extractSelected(candidates, state.medoids, state.numSelected);
+            for (WeightedPoint point : points) {
+                double[] coords = point.features.values;
+                double weight = point.weight;
+                double minDistance = Double.MAX_VALUE;
+
+                for (double[] medoid : selectedMedoids) {
+                    double dist = distanceMetric.compute(medoid, coords);
+                    if (dist < minDistance) {
+                        minDistance = dist;
                     }
-                    for (int i = 0; i < numCandidates; i++) {
-                        double gain = minDistance - distanceMetric.compute(candidateCoords[i], coords);
-                        if (gain > 0.0) {
-                            accumulator[i] += weight * gain;
-                        }
+                }
+                for (int i = 0; i < numCandidates; i++) {
+                    double gain = minDistance - distanceMetric.compute(candidates[i], coords);
+                    if (gain > 0.0) {
+                        accumulator[i] += weight * gain;
                     }
                 }
             }
             return accumulator;
         }
 
-        private double[] aggregateSwapPhase(IterationState state) throws Exception {
-            double[][] activeMedoids = extractSelectedCoordinates(candidateCoords, state.medoids, targetK);
+        private double[] aggregateSwapPhase(FastPamState state, Iterable<WeightedPoint> points) {
+            int numCandidates = candidates.length;
+            double[][] activeMedoids = extractSelected(candidates, state.medoids, targetK);
             double[] accumulator = new double[numCandidates + numCandidates * targetK];
 
-            for (WeightedPoint point : cachedPoints.get()) {
+            for (WeightedPoint point : points) {
                 double[] coords = point.features.values;
                 double weight = point.weight;
                 double closestDist = Double.MAX_VALUE;
@@ -282,7 +214,7 @@ public class DistributedFastPAM implements Clusterer {
                 }
 
                 for (int i = 0; i < numCandidates; i++) {
-                    double candidateDist = distanceMetric.compute(candidateCoords[i], coords);
+                    double candidateDist = distanceMetric.compute(candidates[i], coords);
                     double sharedContribution = candidateDist < closestDist ? weight * (candidateDist - closestDist) : 0.0;
                     accumulator[i] += sharedContribution;
 
@@ -294,61 +226,67 @@ public class DistributedFastPAM implements Clusterer {
         }
 
         @Override
-        public void onIterationTerminated(Context context, Collector<PartialStats> out) throws Exception {
-            cachedPoints.clear();
-        }
-
-        @Override public void processWatermark1(Watermark mark) {}
-        @Override public void processWatermark2(Watermark mark) {}
-        @Override public void processLatencyMarker1(LatencyMarker latencyMarker) {}
-        @Override public void processLatencyMarker2(LatencyMarker latencyMarker) {}
-    }
-
-    /**
-     * Single-task combiner. Merges partial results and determines the next BUILD selection
-     * or the best SWAP move.
-     */
-    private static final class StatsCombiner
-            implements FlatMapFunction<PartialStats, IterationUpdate>, IterationListener<IterationUpdate> {
-
-        private final int numCandidates;
-        private final int targetK;
-        private final int maxIterations;
-        private transient List<PartialStats> statsBuffer;
-
-        StatsCombiner(int numCandidates, int targetK, int maxIterations) {
-            this.numCandidates = numCandidates;
-            this.targetK = targetK;
-            this.maxIterations = maxIterations;
+        public FastPamPartial merge(FastPamPartial left, FastPamPartial right) {
+            if (left.gathered != null) {
+                double[][] joined = new double[left.gathered.length + right.gathered.length][];
+                System.arraycopy(left.gathered, 0, joined, 0, left.gathered.length);
+                System.arraycopy(right.gathered, 0, joined, left.gathered.length, right.gathered.length);
+                left.gathered = joined;
+                return left;
+            }
+            for (int i = 0; i < left.sums.length; i++) {
+                left.sums[i] += right.sums[i];
+            }
+            return left;
         }
 
         @Override
-        public void flatMap(PartialStats stats, Collector<IterationUpdate> out) {
-            if (statsBuffer == null) {
-                statsBuffer = new ArrayList<>();
+        public MedoidIteration.Decision<FastPamState> combine(
+                int round, FastPamState state, List<FastPamPartial> partials) {
+
+            if (state.phase == PHASE_GATHER) {
+                return afterGather(state, partials);
             }
-            statsBuffer.add(stats);
+            return afterSearchRound(state, partials);
         }
 
-        @Override
-        public void onEpochWatermarkIncremented(int epoch, Context context, Collector<IterationUpdate> out) {
-            if (statsBuffer == null || statsBuffer.isEmpty()) {
-                return;
-            }
-            statsBuffer.sort(Comparator.comparingInt(p -> p.subtaskId));
-            IterationState state = statsBuffer.get(0).state;
+        private MedoidIteration.Decision<FastPamState> afterGather(
+                FastPamState state, List<FastPamPartial> partials) {
 
-            int dataLength = statsBuffer.get(0).accumulatedData.length;
-            double[] globalSums = new double[dataLength];
-            for (PartialStats partial : statsBuffer) {
-                for (int i = 0; i < dataLength; i++) {
-                    globalSums[i] += partial.accumulatedData[i];
+            List<double[]> collected = new ArrayList<>();
+            for (FastPamPartial partial : partials) {
+                java.util.Collections.addAll(collected, partial.gathered);
+            }
+            if (collected.size() < targetK) {
+                throw new IllegalArgumentException("Dataset too small: n=" + collected.size()
+                    + " points but k=" + targetK + " medoids requested.");
+            }
+            candidates = collected.toArray(new double[0][]);
+
+            FastPamState next = state.copy();
+            next.phase = PHASE_SEARCH;
+            next.candidates = candidates;
+            next.medoids = new int[targetK];
+            Arrays.fill(next.medoids, -1);
+            next.numSelected = 0;
+            next.completedSwapRounds = 0;
+            return MedoidIteration.Decision.next(next);
+        }
+
+        private MedoidIteration.Decision<FastPamState> afterSearchRound(
+                FastPamState state, List<FastPamPartial> partials) {
+
+            int numCandidates = candidates.length;
+            double[] globalSums = new double[partials.get(0).sums.length];
+            for (FastPamPartial partial : partials) {
+                for (int i = 0; i < globalSums.length; i++) {
+                    globalSums[i] += partial.sums[i];
                 }
             }
-            statsBuffer = null;
 
-            IterationState nextState = state.copy();
-            boolean shouldStop;
+            FastPamState next = state.copy();
+            next.candidates = null;   // every worker memoised it on the entering round
+            boolean stop;
 
             if (state.numSelected < targetK) {
                 boolean[] excluded = new boolean[numCandidates];
@@ -359,9 +297,9 @@ public class DistributedFastPAM implements Clusterer {
                     ? findMinExcluding(globalSums, excluded)
                     : findMaxExcluding(globalSums, excluded);
 
-                nextState.medoids[state.numSelected] = nextIndex;
-                nextState.numSelected = state.numSelected + 1;
-                shouldStop = false;
+                next.medoids[state.numSelected] = nextIndex;
+                next.numSelected = state.numSelected + 1;
+                stop = false;
             } else {
                 boolean[] isMedoid = new boolean[numCandidates];
                 for (int i = 0; i < targetK; i++) {
@@ -383,100 +321,29 @@ public class DistributedFastPAM implements Clusterer {
                         }
                     }
                 }
-                nextState.completedSwapRounds = state.completedSwapRounds + 1;
+                next.completedSwapRounds = state.completedSwapRounds + 1;
                 boolean isImprovement = SwapMove.isImprovement(bestMove);
-
                 if (isImprovement) {
-                    nextState.medoids[bestMove.targetSlot] = bestMove.candidateIdx;
+                    next.medoids[bestMove.targetSlot] = bestMove.candidateIdx;
                 }
-                shouldStop = !isImprovement || nextState.completedSwapRounds >= maxIterations;
+                stop = !isImprovement || next.completedSwapRounds >= maxIterations;
             }
 
-            IterationUpdate update = new IterationUpdate();
-            update.state = nextState;
-            update.shouldStop = shouldStop;
-            out.collect(update);
-        }
-
-        @Override
-        public void onIterationTerminated(Context context, Collector<IterationUpdate> out) {}
-    }
-
-    private static final class TerminationEvaluator
-            implements FlatMapFunction<IterationUpdate, Integer>, IterationListener<Integer> {
-        private transient boolean shouldStop;
-
-        @Override
-        public void flatMap(IterationUpdate update, Collector<Integer> out) {
-            shouldStop = update.shouldStop;
-        }
-
-        @Override
-        public void onEpochWatermarkIncremented(int epoch, Context context, Collector<Integer> out) {
-            if (!shouldStop) {
-                out.collect(0);
+            if (stop) {
+                next.bestMedoids = extractSelected(candidates, next.medoids, targetK);
             }
-            shouldStop = false;
-        }
-
-        @Override
-        public void onIterationTerminated(Context context, Collector<Integer> out) {}
-    }
-
-    public static final class IterationState implements Serializable {
-        public int[] medoids;
-        public int numSelected;
-        public int completedSwapRounds;
-
-        public IterationState() {}
-
-        static IterationState initialize(int targetK) {
-            IterationState state = new IterationState();
-            state.medoids = new int[targetK];
-            Arrays.fill(state.medoids, -1);
-            state.numSelected = 0;
-            state.completedSwapRounds = 0;
-            return state;
-        }
-
-        IterationState copy() {
-            IterationState copy = new IterationState();
-            copy.medoids = medoids.clone();
-            copy.numSelected = numSelected;
-            copy.completedSwapRounds = completedSwapRounds;
-            return copy;
+            return stop
+                ? MedoidIteration.Decision.stop(next)
+                : MedoidIteration.Decision.next(next);
         }
     }
 
-    public static final class PartialStats implements Serializable {
-        public int subtaskId;
-        public double[] accumulatedData;
-        public IterationState state;
-
-        public PartialStats() {}
-    }
-
-    public static final class IterationUpdate implements Serializable {
-        public IterationState state;
-        public boolean shouldStop;
-
-        public IterationUpdate() {}
-    }
-
-    private static double[][] extractSelectedCoordinates(double[][] candidates, int[] indices, int count) {
+    private static double[][] extractSelected(double[][] candidates, int[] indices, int count) {
         double[][] selected = new double[count][];
         for (int i = 0; i < count; i++) {
             selected[i] = candidates[indices[i]];
         }
         return selected;
-    }
-
-    private static int[] generateInitialIndices(int limit, int count) {
-        int[] indices = new int[count];
-        for (int i = 0; i < count; i++) {
-            indices[i] = i;
-        }
-        return indices;
     }
 
     private static int findMinExcluding(double[] values, boolean[] excluded) {

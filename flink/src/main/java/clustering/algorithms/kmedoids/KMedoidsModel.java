@@ -4,16 +4,18 @@ import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Model;
 import clustering.distance.DistanceMetric;
 
-/** Fitted medoid model. Java mirror of the Spark {@code KMedoidsModel}: cluster
- *  centres are actual data points (medoids) instead of arbitrary centroids. */
+/**
+ * Fitted k-medoids model.
+ * Cluster centers are actual data points (medoids) rather than computed centroids.
+ */
 public class KMedoidsModel implements Model {
 
     private final DenseVector[] medoids;
-    private final DistanceMetric distance;
+    private final DistanceMetric distanceMetric;
 
-    public KMedoidsModel(DenseVector[] medoids, DistanceMetric distance) {
+    public KMedoidsModel(DenseVector[] medoids, DistanceMetric distanceMetric) {
         this.medoids = medoids;
-        this.distance = distance;
+        this.distanceMetric = distanceMetric;
     }
 
     public DenseVector[] medoids() {
@@ -22,15 +24,16 @@ public class KMedoidsModel implements Model {
 
     @Override
     public int predict(DenseVector features) {
-        int best = 0;
-        double min = Double.MAX_VALUE;
-        for (int j = 0; j < medoids.length; j++) {
-            double d = distance.compute(features, medoids[j]);
-            if (d < min) {
-                min = d;
-                best = j;
+        int closestMedoidIndex = 0;
+        double minDistance = Double.MAX_VALUE;
+
+        for (int i = 0; i < medoids.length; i++) {
+            double dist = distanceMetric.compute(features, medoids[i]);
+            if (dist < minDistance) {
+                minDistance = dist;
+                closestMedoidIndex = i;
             }
         }
-        return best;
+        return closestMedoidIndex;
     }
 }
