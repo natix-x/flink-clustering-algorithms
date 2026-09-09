@@ -32,4 +32,19 @@ public final class EuclideanDistance implements DistanceMetric {
         }
         return sum <= limit;
     }
+
+    /** Squared-space early exit, {@code sqrt} paid only for a hit. */
+    @Override
+    public double distanceUpTo(double[] a, double[] b, double bound) {
+        double limit = bound * bound;
+        double sum = 0.0;
+        for (int i = 0; i < a.length; i++) {
+            double d = a[i] - b[i];
+            sum += d * d;
+            if (sum > limit) {
+                return Double.POSITIVE_INFINITY;
+            }
+        }
+        return sum <= limit ? Math.sqrt(sum) : Double.POSITIVE_INFINITY;
+    }
 }

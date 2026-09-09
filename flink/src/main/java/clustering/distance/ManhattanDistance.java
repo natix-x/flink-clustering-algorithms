@@ -28,4 +28,17 @@ public final class ManhattanDistance implements DistanceMetric {
         }
         return sum <= radius;
     }
+
+    /** L1 sums are monotone, so the same early exit applies. */
+    @Override
+    public double distanceUpTo(double[] a, double[] b, double bound) {
+        double sum = 0.0;
+        for (int i = 0; i < a.length; i++) {
+            sum += Math.abs(a[i] - b[i]);
+            if (sum > bound) {
+                return Double.POSITIVE_INFINITY;
+            }
+        }
+        return sum <= bound ? sum : Double.POSITIVE_INFINITY;
+    }
 }

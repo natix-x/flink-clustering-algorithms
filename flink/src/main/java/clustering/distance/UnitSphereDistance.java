@@ -1,5 +1,7 @@
 package clustering.distance;
 
+import clustering.core.SphericalGeometry;
+
 /** Cosine distance specialised to <b>unit-norm</b> vectors: {@code 1 - <a, b>}.
  *
  *  Identical to {@link CosineDistance} whenever both arguments are L2-normalised, but it

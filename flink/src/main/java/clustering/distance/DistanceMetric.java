@@ -1,7 +1,6 @@
 package clustering.distance;
 
 import org.apache.flink.ml.linalg.DenseVector;
-
 import java.io.Serializable;
 
 /** A distance between two feature vectors. Java mirror of the Spark repo's
@@ -42,5 +41,26 @@ public interface DistanceMetric extends Serializable {
      *  false, as they do in {@code compute}. */
     default boolean withinRadius(double[] a, double[] b, double radius) {
         return compute(a, b) <= radius;
+    }
+
+    /** {@code d(a, b)} when it is {@code <= bound}, else {@link Double#POSITIVE_INFINITY} — the
+     *  NEAREST-PROTOTYPE counterpart of {@link #withinRadius}, for a scan that keeps a running
+     *  minimum (or, tracking a top-2, a running SECOND minimum).
+     *
+     *  Same early exit, with a bound that SHRINKS as the scan finds better candidates: a caller
+     *  passes {@code min(eps, bestSoFar)} or the current second-nearest distance, so every hit
+     *  tightens the test for the rest of the scan. Mirrors the Spark repo's
+     *  {@code DistanceMetric.distanceUpTo} exactly — same semantics, same name.
+     *
+     *  Why returning infinity rather than the true distance is not a loss of information: the
+     *  caller is looking for the minimum (or the top-2), and anything above the bound cannot be
+     *  either slot, so the caller never needed its exact value.
+     *
+     *  Must agree with {@link #compute} whenever it returns a finite value, boundary included
+     *  ({@code d == bound} is a hit). NaN coordinates yield infinity, matching {@link #withinRadius}'s
+     *  {@code false}. */
+    default double distanceUpTo(double[] a, double[] b, double bound) {
+        double d = compute(a, b);
+        return d <= bound ? d : Double.POSITIVE_INFINITY;
     }
 }
