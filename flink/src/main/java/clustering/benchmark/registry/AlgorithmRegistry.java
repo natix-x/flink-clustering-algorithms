@@ -1,24 +1,21 @@
 package clustering.benchmark.registry;
 
-import clustering.algorithms.dbscan.CandidateSelectionStrategy;
+import clustering.algorithms.dbscan.components.CandidateSelectionStrategy;
+import clustering.algorithms.dbscan.components.UniformSelection;
+import clustering.algorithms.kmeans.hierarchical.BisectingKMeans;
+import clustering.algorithms.kmedoids.distributed.DistributedFastPAM;
+import clustering.algorithms.kmedoids.hybrid.CLARA;
+import clustering.algorithms.kmedoids.hybrid.PAMAE;
+import clustering.algorithms.kmedoids.local.FastPAM;
+import clustering.algorithms.kmedoids.local.FasterPAM;
 import clustering.algorithms.dbscan.DBSCANpp;
-import clustering.algorithms.dbscan.UniformSelection;
-import clustering.algorithms.kmeans.BisectingKMeans;
 import clustering.algorithms.kmeans.BreathingKMeans;
 import clustering.algorithms.kmeans.KMeans;
-import clustering.algorithms.kmedoids.CLARA;
-import clustering.algorithms.kmedoids.ClaraFlip;
-import clustering.algorithms.kmedoids.DistributedFastPAM;
-import clustering.algorithms.kmedoids.DistributedPAM;
-import clustering.algorithms.kmedoids.FastPAM;
-import clustering.algorithms.kmedoids.PAM;
 import clustering.benchmark.config.AlgorithmSpec;
 import clustering.benchmark.config.Params;
 import clustering.core.Clusterer;
 import clustering.core.Geometry;
 import clustering.distance.DistanceMetric;
-import clustering.distance.EuclideanDistance;
-
 import java.util.Map;
 import java.util.function.Function;
 
@@ -49,14 +46,12 @@ public final class AlgorithmRegistry {
         Map<String, Function<Map<String, Object>, Built>> m = new java.util.LinkedHashMap<>();
         m.put("kmeans", AlgorithmRegistry::kmeans);
         m.put("bisectingkmeans", AlgorithmRegistry::bisectingkmeans);
-        m.put("pam", AlgorithmRegistry::pam);
         m.put("fastpam", AlgorithmRegistry::fastpam);
+        m.put("fasterpam", AlgorithmRegistry::fasterpam);
         m.put("distfastpam", AlgorithmRegistry::distfastpam);
-        m.put("distpam", AlgorithmRegistry::distpam);
         m.put("clara", AlgorithmRegistry::clara);
-        m.put("claraflip", AlgorithmRegistry::claraflip);
+        m.put("pamae", AlgorithmRegistry::pamae);
         m.put("dbscanpp", AlgorithmRegistry::dbscanpp);
-        m.put("dbscanexact", AlgorithmRegistry::dbscanexact);
         return m;
     }
 
@@ -99,7 +94,8 @@ public final class AlgorithmRegistry {
         return new Built(clusterer, geometry.modelDistance());
     }
 
-    /** Bisecting k-means — divisive, one FLIP-176 job for the whole split search. */
+    /** Bisecting k-means — divisive, one FLIP-176 job for the whole split search (trials
+     *  included). */
     private static Built bisectingkmeans(Map<String, Object> params) {
         Geometry geometry = geometryFrom(params);
         return new Built(new BisectingKMeans(
@@ -107,25 +103,33 @@ public final class AlgorithmRegistry {
             Params.intParam(params, "maxIter", 20),
             Params.doubleParam(params, "eps", 1e-4),
             Params.longParam(params, "seed", 42L),
-            geometry), geometry.modelDistance());
+            geometry,
+            // Steinbach et al.'s ITER: competing 2-means runs per split, cheapest wins.
+            // 1 = the single-shot rung; sweeping it is the cost-vs-stability knob.
+            Params.intParam(params, "trials", 1),
+            // Which leaf gets split: 'cost' minimises error (scikit-learn's default),
+            // 'size' balances the tree (what Steinbach et al. ran).
+            Params.stringParam(params, "select", "cost")), geometry.modelDistance());
     }
 
-    /** PAM — classic k-medoids, driver-local O(n²). */
-    private static Built pam(Map<String, Object> params) {
-        DistanceMetric distance = distanceFrom(params);
-        return new Built(new PAM(
-            Params.intParam(params, "k"),
-            Params.intParam(params, "maxIter", 100),
-            distance), distance);
-    }
-
-    /** FastPAM — O(k*n²) swap variant, driver-local. */
+    /** FastPAM1 — driver-local exact swap (Schubert &amp; Rousseeuw 2019), same result as the
+     *  1990 PAM search. */
     private static Built fastpam(Map<String, Object> params) {
         DistanceMetric distance = distanceFrom(params);
         return new Built(new FastPAM(
             Params.intParam(params, "k"),
             Params.intParam(params, "maxIter", 100),
             distance), distance);
+    }
+
+    /** FasterPAM — driver-local eager swap (Schubert &amp; Rousseeuw 2021). */
+    private static Built fasterpam(Map<String, Object> params) {
+        DistanceMetric distance = distanceFrom(params);
+        return new Built(new FasterPAM(
+            Params.intParam(params, "k"),
+            Params.intParam(params, "maxIter", 100),
+            distance,
+            Params.longParam(params, "seed", 42L)), distance);
     }
 
     /** Distributed FastPAM — O(n²) work split across machines, no driver-side matrix. */
@@ -137,17 +141,14 @@ public final class AlgorithmRegistry {
             distance), distance);
     }
 
-    /** Distributed classic PAM — same scaffold as distfastpam but the naive O(k*n²) swap.
-     *  Baseline for measuring the FastPAM1 speedup. */
-    private static Built distpam(Map<String, Object> params) {
-        DistanceMetric distance = distanceFrom(params);
-        return new Built(new DistributedPAM(
-            Params.intParam(params, "k"),
-            Params.intParam(params, "maxIter", 100),
-            distance), distance);
-    }
-
-    /** CLARA — PAM on random samples, scales to large datasets. */
+    /** CLARA — the exact solver on random samples, scales to large datasets. One FLIP-176 job with
+     *  the data cached once: round 0 draws every sample in a single pass and solves them, round 1
+     *  scores every candidate against the full data in a single pass.
+     *
+     *  The separate `claraflip` entry (one sample per round) was folded into this one on 5.09.2026:
+     *  batching inside the cached iteration does the same distance work in 2 passes instead of
+     *  numSamples + 1, so it dominated both earlier entries and neither is worth keeping beside
+     *  it. */
     private static Built clara(Map<String, Object> params) {
         DistanceMetric distance = distanceFrom(params);
         return new Built(new CLARA(
@@ -155,18 +156,26 @@ public final class AlgorithmRegistry {
             Params.intParam(params, "numSamples", 5),
             Params.intParam(params, "sampleSize", 1000),
             Params.intParam(params, "maxIter", 100),
-            distance), distance);
+            distance,
+            // Which driver-local solver runs on each sample (Schubert & Rousseeuw 2021).
+            // 'fastpam' is the exact rung — identical result to the 1990 PAM, O(k) cheaper.
+            Params.stringParam(params, "inner", "fastpam"),
+            Params.longParam(params, "seed", 42L)), distance);
     }
 
-    /** CLARA on FLIP-176 — one job, full dataset cached once; PAM stays local on the sample. */
-    private static Built claraflip(Map<String, Object> params) {
+    /** PAMAE (KDD 2017) — parallel seeding (= CLARA) + parallel refinement over entire data. */
+    private static Built pamae(Map<String, Object> params) {
         DistanceMetric distance = distanceFrom(params);
-        return new Built(new ClaraFlip(
+        return new Built(new PAMAE(
             Params.intParam(params, "k"),
             Params.intParam(params, "numSamples", 5),
             Params.intParam(params, "sampleSize", 1000),
             Params.intParam(params, "maxIter", 100),
-            distance), distance);
+            Params.intParam(params, "refineIters", 1),
+            Params.intParam(params, "poolSize", 2000),
+            distance,
+            Params.stringParam(params, "inner", "fastpam"),
+            Params.longParam(params, "seed", 42L)), distance);
     }
 
     /** DBSCAN++ — sampled candidate cores, exact densities against the full dataset. */
@@ -178,44 +187,8 @@ public final class AlgorithmRegistry {
             // The universal accuracy-vs-cost knob; required, so no run hides which m it used.
             Params.doubleParam(params, "coreSampleFraction"),
             CandidateSelectionStrategy.fromName(
-                Params.stringParam(params, "sampling", "uniform"),
-                Params.intParam(params, "poolFactor", 4)),
+                Params.stringParam(params, "sampling", "uniform")),
             // assign: 'eps' = classic DBSCAN noise semantics, 'closest' = the paper's rule.
-            assignWithinEps(Params.stringParam(params, "assign", "eps")),
-            Params.intParam(params, "chunkSize", 2000),
-            distance,
-            Params.longParam(params, "seed", 42L)), distance);
-    }
-
-    /** Exact classic DBSCAN — the SAME code path as {@code dbscanpp} with s pinned to 1.0, so
-     *  densities, core points and connectivity are all exact. Registered under its own name so
-     *  the experiment matrix and the thesis tables can carry the exact rung as a distinct row
-     *  rather than as a parameter value of the sampled entry.
-     *
-     *  O(n²) time and every point resident as a candidate: the exactness ORACLE, for samples and
-     *  small data, not for the full datasets. */
-    private static Built dbscanexact(Map<String, Object> params) {
-        double s = Params.doubleParam(params, "coreSampleFraction", 1.0);
-        if (s != 1.0) {
-            throw new IllegalArgumentException(
-                "'dbscanexact' is exact by definition (coreSampleFraction = 1.0), got " + s
-                + ". Use 'dbscanpp' for sampled runs.");
-        }
-        // At s = 1.0 every strategy degenerates to "take all rows", so accepting these silently
-        // would leave a config claiming a sampling strategy that never ran.
-        for (String key : new String[] {"sampling", "poolFactor"}) {
-            if (params.containsKey(key)) {
-                throw new IllegalArgumentException(
-                    "'dbscanexact' takes no candidate sampling params (got '" + key + "'): with "
-                    + "coreSampleFraction = 1.0 every candidate is used. Use 'dbscanpp' to sample.");
-            }
-        }
-        DistanceMetric distance = distanceFrom(params);
-        return new Built(new DBSCANpp(
-            Params.doubleParam(params, "eps"),
-            Params.intParam(params, "minPts"),
-            1.0,
-            UniformSelection.INSTANCE,
             assignWithinEps(Params.stringParam(params, "assign", "eps")),
             Params.intParam(params, "chunkSize", 2000),
             distance,
@@ -227,9 +200,18 @@ public final class AlgorithmRegistry {
         return f.apply(spec.params == null ? new java.util.HashMap<>() : spec.params);
     }
 
+    /** Parses the REQUIRED {@code distance} param. No default — every run must state its distance
+     *  explicitly so benchmark results are unambiguous, and so a Flink config and a Spark config
+     *  for the same experiment cannot silently disagree (Spark has always required it; defaulting
+     *  here to euclidean meant a config that omitted it ran euclidean on one engine and failed on
+     *  the other). Not used by the k-means family, whose metric is fixed by {@code geometry}. */
     private static DistanceMetric distanceFrom(Map<String, Object> params) {
         Object d = params.get("distance");
-        return d == null ? EuclideanDistance.INSTANCE : DistanceRegistry.get(d.toString());
+        if (d == null) {
+            throw new IllegalArgumentException(
+                "Missing required 'distance' parameter. Known: " + DistanceRegistry.knownNames());
+        }
+        return DistanceRegistry.get(d.toString());
     }
 
     /** Parses the optional {@code geometry} param (the space a centroid algorithm optimises in).

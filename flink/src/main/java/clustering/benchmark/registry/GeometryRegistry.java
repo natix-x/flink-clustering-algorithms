@@ -3,7 +3,6 @@ package clustering.benchmark.registry;
 import clustering.core.EuclideanGeometry;
 import clustering.core.Geometry;
 import clustering.core.SphericalGeometry;
-
 import java.util.LinkedHashMap;
 import java.util.Map;
 

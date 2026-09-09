@@ -4,7 +4,6 @@ import clustering.distance.CosineDistance;
 import clustering.distance.DistanceMetric;
 import clustering.distance.EuclideanDistance;
 import clustering.distance.ManhattanDistance;
-
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -26,5 +25,10 @@ public final class DistanceRegistry {
 
     public static DistanceMetric get(String name) {
         return REGISTRY.get(name);
+    }
+
+    /** Registered names, for the "you must state a distance" error message. */
+    public static String knownNames() {
+        return String.join(", ", REGISTRY.knownNames());
     }
 }

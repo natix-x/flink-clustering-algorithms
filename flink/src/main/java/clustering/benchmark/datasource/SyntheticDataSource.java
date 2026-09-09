@@ -1,12 +1,13 @@
 package clustering.benchmark.datasource;
 
+
 import clustering.benchmark.config.Params;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.ml.linalg.DenseVector;
-import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
+import clustering.core.WeightedPoint;
+import clustering.core.WeightedPointTypeInfo;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Random;
@@ -45,7 +46,7 @@ public final class SyntheticDataSource implements DataSource {
     }
 
     @Override
-    public DataStream<DenseVector> load(StreamExecutionEnvironment env) {
+    public DataStream<WeightedPoint> load(StreamExecutionEnvironment env) {
         // Parallelism is taken from the environment (set per job by the EnvFactory),
         // NOT pinned here — so a sample can be collected deterministically at
         // parallelism 1 (index order) while fit runs at full parallelism. Each point
@@ -53,11 +54,11 @@ public final class SyntheticDataSource implements DataSource {
         // parallelism.
         return env.fromSequence(0L, numPoints - 1)
             .map(new GeneratePoint(seed))
-            .returns(DenseVectorTypeInfo.INSTANCE);
+            .returns(WeightedPointTypeInfo.INSTANCE);
     }
 
     /** Maps a point index to a sample, seeding a per-point RNG deterministically. */
-    private static final class GeneratePoint implements MapFunction<Long, DenseVector> {
+    private static final class GeneratePoint implements MapFunction<Long, WeightedPoint> {
         private final long seed;
 
         GeneratePoint(long seed) {
@@ -65,9 +66,11 @@ public final class SyntheticDataSource implements DataSource {
         }
 
         @Override
-        public DenseVector map(Long index) {
+        public WeightedPoint map(Long index) {
             Random rng = new Random(seed + index * 0x9E3779B97F4A7C15L);
-            return new DenseVector(samplePoint(rng));
+            // Unit weight: the generator emits individual points, so a synthetic run is the
+            // unit-weight case of the weighted objective.
+            return WeightedPoint.of(samplePoint(rng));
         }
     }
 

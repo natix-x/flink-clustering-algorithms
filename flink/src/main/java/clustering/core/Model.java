@@ -1,7 +1,6 @@
 package clustering.core;
 
 import org.apache.flink.ml.linalg.DenseVector;
-
 import java.io.Serializable;
 import java.util.List;
 

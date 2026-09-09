@@ -1,5 +1,6 @@
 package clustering.core;
 
+import clustering.algorithms.kmeans.CentroidIteration;
 import java.io.Serializable;
 
 /** Fits a {@link Model} to a distributed point source.

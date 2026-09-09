@@ -36,6 +36,10 @@ public final class Params {
         return v == null ? dflt : ((Number) v).doubleValue();
     }
 
+    public static String stringParam(Map<String, Object> p, String key) {
+        return require(p, key).toString();
+    }
+
     public static String stringParam(Map<String, Object> p, String key, String dflt) {
         Object v = p.get(key);
         return v == null ? dflt : v.toString();

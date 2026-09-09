@@ -2,8 +2,8 @@ package clustering.benchmark.registry;
 
 import clustering.benchmark.config.DataSourceSpec;
 import clustering.benchmark.datasource.DataSource;
+import clustering.benchmark.datasource.ParquetDataSource;
 import clustering.benchmark.datasource.SyntheticDataSource;
-
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -12,7 +12,7 @@ import java.util.Map;
  *  {@code DataSourceRegistry}; resolution and the "unknown type" error come from the shared
  *  {@link NamedRegistry}, so all registration lives in one package alongside
  *  {@link AlgorithmRegistry} and {@link DistanceRegistry}. Add a data source by listing its
- *  Factory here (e.g. {@code ParquetDataSource.factory()}). */
+ *  Factory here. */
 public final class DataSourceRegistry {
 
     private static final NamedRegistry<DataSource.Factory> REGISTRY;
@@ -20,7 +20,7 @@ public final class DataSourceRegistry {
     static {
         Map<String, DataSource.Factory> m = new LinkedHashMap<>();
         register(m, SyntheticDataSource.factory());
-        // future: register(m, ParquetDataSource.factory());
+        register(m, ParquetDataSource.factory());
         REGISTRY = new NamedRegistry<>("data source type", m);
     }
 

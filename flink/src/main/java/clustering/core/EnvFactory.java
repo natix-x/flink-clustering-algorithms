@@ -1,7 +1,7 @@
 package clustering.core;
 
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.io.Serializable;
 
 /** Produces a fresh, BATCH-configured Flink environment per call.

@@ -1,8 +1,9 @@
 package clustering.benchmark.config;
 
+
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
@@ -17,6 +18,12 @@ public class RunConfig {
     public DataSourceSpec dataset;
     public AlgorithmSpec algorithm;
     public EvaluationSpec evaluation = new EvaluationSpec();
+    /** Per-run engine configuration. The harness emits this under the key `flink_config`
+     *  (see the run-config contract and `flink_launcher.py`), which the alias below binds —
+     *  without it, `@JsonIgnoreProperties(ignoreUnknown = true)` silently DROPPED every
+     *  entry, so the knob looked live while doing nothing, unlike Spark's working
+     *  `spark_config`. Applied to the execution environment in `FlinkClusteringJob`. */
+    @JsonAlias({"flink_config", "flinkConf"})
     public Map<String, String> engineConf = new HashMap<>();
     public Map<String, String> sparkConf;   // deprecated alias
     public String outputDir;          // overrides profile default

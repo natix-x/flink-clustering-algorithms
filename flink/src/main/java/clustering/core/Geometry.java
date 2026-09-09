@@ -2,7 +2,6 @@ package clustering.core;
 
 import clustering.distance.DistanceMetric;
 import org.apache.flink.ml.linalg.DenseVector;
-
 import java.io.Serializable;
 
 /** The space a centroid-based algorithm optimises in — a knob, not an algorithm

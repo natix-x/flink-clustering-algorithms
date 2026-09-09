@@ -5,7 +5,6 @@ import clustering.benchmark.config.RunConfig;
 import clustering.benchmark.metrics.RunResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import java.nio.file.Path;
 
 /** Entry point for one benchmark run.
@@ -15,7 +14,16 @@ import java.nio.file.Path;
  *  Exactly one config file produces exactly one JSON result file under
  *  {@code <outputDir>/<runId>.json}. Failures still write a result (status
  *  "failed" + errorMessage) so array jobs never silently lose runs. Java mirror
- *  of the Spark {@code BenchmarkRunner}. */
+ *  of the Spark {@code BenchmarkRunner}.
+ *
+ *  <p>Under standalone Application Mode ({@code standalone-job.sh --job-classname
+ *  BenchmarkRunner <args>}) do NOT pass {@code --config}: the entry point's own
+ *  {@code StandaloneApplicationClusterConfigurationParserFactory} does Commons-CLI long-option
+ *  PREFIX matching, and {@code --config} is an unambiguous abbreviation of Flink's OWN
+ *  {@code --configDir} — it gets consumed as that option's value and never reaches this
+ *  class's {@code main(args)} at all (confirmed empirically: a probe class logging its raw
+ *  {@code args} saw every other flag pass through untouched, but {@code --config <path>}
+ *  vanished). Pass the config path as a bare positional argument instead. */
 public final class BenchmarkRunner {
 
     private static final Logger logger = LoggerFactory.getLogger(BenchmarkRunner.class);
@@ -41,6 +49,12 @@ public final class BenchmarkRunner {
         System.exit("ok".equals(result.status) ? 0 : 2);
     }
 
+    /** Accepts either {@code --config <path>} (session mode, `flink run ... --config <path>`)
+     *  or a bare positional path with no flag (standalone Application Mode via
+     *  {@code standalone-job.sh}: its entry point's own CLI parser does long-option PREFIX
+     *  matching, so `--config` is silently swallowed as an abbreviation of Flink's own
+     *  `--configDir` and never reaches here — a plain positional argument has no such
+     *  collision). */
     private static String parseConfigPath(String[] args) {
         String configPath = null;
         for (int i = 0; i < args.length; i++) {
@@ -57,11 +71,14 @@ public final class BenchmarkRunner {
                     System.exit(0);
                     break;
                 default:
-                    fail("Unknown argument: " + args[i]);
+                    if (args[i].startsWith("-")) {
+                        fail("Unknown argument: " + args[i]);
+                    }
+                    configPath = args[i];
             }
         }
         if (configPath == null) {
-            fail("--config is required");
+            fail("--config (or a bare config path) is required");
         }
         return configPath;
     }
@@ -72,8 +89,10 @@ public final class BenchmarkRunner {
     }
 
     private static String usage() {
-        return "Usage: flink run flink-clustering-benchmark.jar --config <path>\n\n"
-            + "  --config  Path to a per-run JSON config (required)";
+        return "Usage: flink run flink-clustering-benchmark.jar --config <path>\n"
+            + "       standalone-job.sh start --job-classname " + BenchmarkRunner.class.getName() + " <path>\n\n"
+            + "  --config  Path to a per-run JSON config (required; or pass the bare path"
+            + " with no flag under Application Mode — see class doc)";
     }
 
     private BenchmarkRunner() {}

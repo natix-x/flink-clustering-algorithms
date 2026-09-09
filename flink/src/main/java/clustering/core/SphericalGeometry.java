@@ -4,7 +4,6 @@ import clustering.distance.CosineDistance;
 import clustering.distance.DistanceMetric;
 import clustering.distance.UnitSphereDistance;
 import org.apache.flink.ml.linalg.DenseVector;
-import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 
 /** Spherical geometry (Dhillon &amp; Modha 2001) — the unit hypersphere.
  *
@@ -24,9 +23,12 @@ public final class SphericalGeometry implements Geometry {
 
     @Override
     public PointSource prepare(PointSource source) {
+        // Only the FEATURES are normalised; the weight is a multiplicity, not a coordinate, so it
+        // rides through untouched.
         return env -> source.create(env)
-            .map(v -> new DenseVector(Geometry.l2Normalize(v.values)))
-            .returns(DenseVectorTypeInfo.INSTANCE)
+            .map(p -> new WeightedPoint(
+                new DenseVector(Geometry.l2Normalize(p.features.values)), p.weight))
+            .returns(WeightedPointTypeInfo.INSTANCE)
             .name("l2-normalize");
     }
 

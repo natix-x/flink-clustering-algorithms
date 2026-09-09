@@ -1,10 +1,10 @@
 package clustering.core;
 
+
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamUtils;
 import org.apache.flink.streaming.api.operators.collect.ClientAndIterator;
 import org.apache.flink.util.CloseableIterator;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
