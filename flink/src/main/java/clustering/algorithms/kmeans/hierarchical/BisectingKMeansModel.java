@@ -42,7 +42,7 @@ public class BisectingKMeansModel implements Model {
         return leafIds[currentNode];
     }
 
-    public int getClusterCount() {
+    public int numClusters() {
         int count = 0;
         for (int id : leafIds) {
             if (id >= 0) {
@@ -53,8 +53,8 @@ public class BisectingKMeansModel implements Model {
     }
 
     /** Returns leaf centroids ordered by their cluster ID. */
-    public DenseVector[] getLeafCentroids() {
-        DenseVector[] leafCentroids = new DenseVector[getClusterCount()];
+    public DenseVector[] clusterCentroids() {
+        DenseVector[] leafCentroids = new DenseVector[numClusters()];
         for (int nodeId = 0; nodeId < leafIds.length; nodeId++) {
             if (leafIds[nodeId] >= 0) {
                 leafCentroids[leafIds[nodeId]] = centroids[nodeId];

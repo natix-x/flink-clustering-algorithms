@@ -84,7 +84,14 @@ public class BisectingKMeans implements Clusterer {
 
     public BisectingKMeans(int targetK, int maxIterations, double tolerance, long seed, Geometry geometry,
                            int numTrials, String selectionStrategy) {
-        String mode = selectionStrategy;
+        if (numTrials < 1) {
+            throw new IllegalArgumentException("trials must be >= 1, got " + numTrials);
+        }
+        String mode = selectionStrategy.toLowerCase();
+        if (!mode.equals("cost") && !mode.equals("size")) {
+            throw new IllegalArgumentException(
+                "Unknown select mode: '" + selectionStrategy + "'. Known: cost, size");
+        }
         this.targetK = targetK;
         this.maxIterations = maxIterations;
         this.tolerance = tolerance;
@@ -420,6 +427,15 @@ public class BisectingKMeans implements Clusterer {
                 }
             }
             statsBuffer = null;
+
+            // Pinned by content, not by which subtask a rebalance channel happened to route a
+            // row to: the reservoir per subtask is already an unbiased sample of ITS points, but
+            // concatenating subtasks in id order still leaves the MERGED list's order dependent on
+            // Flink's random rebalance start channel. Sorting here is free (single combiner task,
+            // <= SEED_SAMPLE_CAP-ish rows) and makes both the trim below and trial 0's "first" seed
+            // (extractSeeds's sample.get(0)) a pure function of the sampled point SET, not of which
+            // physical channel a row landed on.
+            aggregatedSample.sort(BisectingKMeans::compareByCoordinates);
 
             if (aggregatedSample.size() > SEED_SAMPLE_CAP) {
                 Collections.shuffle(aggregatedSample, new Random(
@@ -780,6 +796,19 @@ public class BisectingKMeans implements Clusterer {
         for (int i = 0; i < accumulator.length; i++) {
             accumulator[i] += weight * point[i];
         }
+    }
+
+    private static int compareByCoordinates(DenseVector a, DenseVector b) {
+        double[] av = a.values;
+        double[] bv = b.values;
+        int shared = Math.min(av.length, bv.length);
+        for (int i = 0; i < shared; i++) {
+            int c = Double.compare(av[i], bv[i]);
+            if (c != 0) {
+                return c;
+            }
+        }
+        return Integer.compare(av.length, bv.length);
     }
 
     private static DenseVector calculateMean(double[] sumVector, double totalMass) {
