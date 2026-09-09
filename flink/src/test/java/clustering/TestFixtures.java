@@ -1,5 +1,4 @@
 package clustering;
-
 import clustering.core.EnvFactory;
 import clustering.core.Model;
 import clustering.core.PointSource;
@@ -7,7 +6,8 @@ import clustering.core.Points;
 import org.apache.flink.ml.linalg.DenseVector;
 import clustering.distance.DistanceMetric;
 import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
+import clustering.core.WeightedPoint;
+import clustering.core.WeightedPointTypeInfo;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.util.ArrayList;
@@ -33,8 +33,15 @@ public final class TestFixtures {
         };
     }
 
+    /** Unit-weight source — the unweighted case of the weighted objective. */
     public static PointSource source(List<double[]> points) {
-        return env -> env.fromCollection(Points.wrapAll(points), DenseVectorTypeInfo.INSTANCE);
+        return env -> env.fromCollection(Points.wrapAll(points), WeightedPointTypeInfo.INSTANCE);
+    }
+
+    /** Source with explicit per-row weights, for the "weighting == duplication" invariant. */
+    public static PointSource weightedSource(List<double[]> points, double[] weights) {
+        List<WeightedPoint> records = Points.wrapAll(points, weights);
+        return env -> env.fromCollection(records, WeightedPointTypeInfo.INSTANCE);
     }
 
     /** {@code count} x {@code count} grid of spacing {@code step}, anchored at (ox, oy). */

@@ -1,15 +1,15 @@
 package clustering.algorithms.kmeans;
 
+import clustering.algorithms.kmeans.hierarchical.BisectingKMeans;
+import clustering.algorithms.kmeans.hierarchical.BisectingKMeansModel;
+import clustering.TestFixtures;
 import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Points;
-import clustering.TestFixtures;
 import clustering.core.EnvFactory;
 import clustering.core.PointSource;
 import org.junit.jupiter.api.Test;
-
 import java.util.ArrayList;
 import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,7 +37,7 @@ class BisectingKMeansSpec {
         EnvFactory envs = TestFixtures.localEnvs(2);
 
         BisectingKMeansModel model = new BisectingKMeans(4, 20, 1e-4, 42L).fit(source, envs, 2);
-        int[] labels = model.labels(Points.wrapAll(points));
+        int[] labels = model.labels(Points.vectorsOf(points));
 
         assertEquals(4, model.numClusters());
         assertEquals(4, TestFixtures.clustersOf(labels).size(), "one leaf per blob");
@@ -76,7 +76,15 @@ class BisectingKMeansSpec {
      *  varies between runs; with four congruent blobs the leaf costs are exact ties up to
      *  floating-point summation order, and the split ORDER can then legitimately flip. Unequal
      *  blobs give the split criterion a real gap to resolve, which is what reproducibility means
-     *  here (see the class docstring of {@link BisectingKMeans}). */
+     *  here (see the class docstring of {@link BisectingKMeans}).
+     *
+     *  Second reason it is stable, and it does NOT generalise: 54 points total, so every leaf fits
+     *  inside the seed sample's cap and the reservoir never evicts — each subtask forwards all of
+     *  its matching points, the concatenation is the whole leaf, and the sample is therefore the
+     *  same set however the rows were partitioned. On a leaf larger than the cap the sample becomes
+     *  a genuine draw and the tree CAN differ between runs (characterised, not asserted, by
+     *  {@code BisectingKnobsSpec#theTreeVariesAcrossRunsAtHigherParallelismButStaysSane}). So do not
+     *  read this test as a promise of bit-reproducibility at scale. */
     @Test
     void isReproducibleAcrossRepeatedFits() {
         List<double[]> points = new ArrayList<>();
@@ -87,8 +95,8 @@ class BisectingKMeansSpec {
         PointSource source = TestFixtures.source(points);
         EnvFactory envs = TestFixtures.localEnvs(2);
 
-        int[] first = new BisectingKMeans(4, 20, 1e-4, 42L).fit(source, envs, 2).labels(Points.wrapAll(points));
-        int[] second = new BisectingKMeans(4, 20, 1e-4, 42L).fit(source, envs, 2).labels(Points.wrapAll(points));
+        int[] first = new BisectingKMeans(4, 20, 1e-4, 42L).fit(source, envs, 2).labels(Points.vectorsOf(points));
+        int[] second = new BisectingKMeans(4, 20, 1e-4, 42L).fit(source, envs, 2).labels(Points.vectorsOf(points));
         for (int i = 0; i < first.length; i++) {
             assertEquals(first[i], second[i], "label " + i + " must be reproducible");
         }
@@ -107,7 +115,7 @@ class BisectingKMeansSpec {
 
         BisectingKMeansModel model = new BisectingKMeans(3, 20, 1e-4, 42L).fit(source, envs, 2);
         assertEquals(1, model.numClusters(), "identical points cannot be bisected");
-        for (int label : model.labels(Points.wrapAll(points))) {
+        for (int label : model.labels(Points.vectorsOf(points))) {
             assertEquals(0, label);
         }
     }

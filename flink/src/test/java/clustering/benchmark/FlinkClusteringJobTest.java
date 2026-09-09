@@ -1,10 +1,10 @@
 package clustering.benchmark;
 
+import clustering.algorithms.kmedoids.local.FastPAM;
 import clustering.benchmark.config.ClusterProfile;
 import clustering.benchmark.config.RunConfig;
 import clustering.benchmark.metrics.RunResult;
 import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -109,10 +109,15 @@ class FlinkClusteringJobTest {
         assertEquals(600L, r.nRows);
         assertNotNull(r.clusterSizes);
 
-        // nClusters / silhouette NOT requested in this config -> omitted (null), matching
-        // Spark's per-metric gating; the cluster count is derived from clusterSizes instead.
-        assertNull(r.nClusters, "nClusters not requested -> should be omitted");
+        // `silhouette` was not requested, so it is omitted — per-metric gating, as on Spark.
         assertNull(r.silhouette, "silhouette not requested -> should be omitted");
+
+        // `nClusters` is the ONE exception to that gating, on both engines: it is emitted whenever
+        // the label-stats scan ran at all, which requesting clusterSizes/noiseFraction/silhouette
+        // does. The count is already in the scan, and gating it would cost
+        // `silhouetteSampleClusters` its meaning — "87 clusters in the sample" says nothing until
+        // you know whether the labelling had 87 or 100.
+        assertEquals(4, r.nClusters, "the label-stats scan ran, so nClusters comes for free");
 
         long nonNoiseClusters = r.clusterSizes.keySet().stream()
             .filter(k -> Integer.parseInt(k) >= 0).count();

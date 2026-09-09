@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Iterator;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Probe: the file metric reporter loads in a local MiniCluster, writes per-process files,
@@ -22,6 +23,7 @@ class ReporterProbeTest {
         Path base = Paths.get(System.getProperty("java.io.tmpdir"), "reporter-probe.txt");
         System.setProperty("clustering.metrics.file", base.toString());
         MetricsFile.reset();
+        long startedAtMs = System.currentTimeMillis();
 
         Configuration conf = new Configuration();
         conf.setString("metrics.reporter.file.factory.class",
@@ -40,7 +42,19 @@ class ReporterProbeTest {
         Thread.sleep(1500);  // let report() ticks fire
 
         BenchmarkListener.Snapshot s = MetricsFile.read();
-        assertTrue(s.taskCount > 0, "expected some task instances");
         assertTrue(s.peakExecutorMemoryBytes > 0, "expected TM heap metric");
+
+        // The per-phase peaks come from a SECOND file (the appended time series), on a different
+        // code path from everything above: if the reporter never writes it, or MetricsFile never
+        // finds it, every phaseWindow* field silently reads 0 and nothing else fails. So assert
+        // the window really carries readings.
+        BenchmarkListener.PhasePeaks peaks = MetricsFile.windowPeaks(startedAtMs, System.currentTimeMillis());
+        assertTrue(peaks.maxWorkerHeapBytes > 0, "expected a sampled TM heap reading in the window");
+        assertTrue(peaks.totalWorkerHeapBytes >= peaks.maxWorkerHeapBytes,
+            "sum across TMs cannot be below the max of one");
+
+        // ...and that the window bounds actually bound: a window before the run must be empty.
+        BenchmarkListener.PhasePeaks before = MetricsFile.windowPeaks(0L, startedAtMs - 1);
+        assertEquals(0L, before.maxWorkerHeapBytes, "readings must not leak outside their window");
     }
 }

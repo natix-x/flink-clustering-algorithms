@@ -1,8 +1,8 @@
 package clustering.algorithms.kmeans;
 
+import clustering.TestFixtures;
 import org.apache.flink.ml.linalg.DenseVector;
 import clustering.core.Points;
-import clustering.TestFixtures;
 import clustering.core.EnvFactory;
 import clustering.core.EuclideanGeometry;
 import clustering.core.PointSource;
@@ -44,7 +44,7 @@ class KMeansSpec {
         EnvFactory envs = TestFixtures.localEnvs(2);
 
         KMeansModel model = new KMeans(3, 20, 1e-4, 7L).fit(source, envs, 2);
-        int[] labels = model.labels(Points.wrapAll(points));
+        int[] labels = model.labels(Points.vectorsOf(points));
 
         assertEquals(3, model.centroids().length);
         assertEquals(3, TestFixtures.clustersOf(labels).size(), "one cluster per blob");
@@ -64,8 +64,8 @@ class KMeansSpec {
         PointSource source = TestFixtures.source(points);
         EnvFactory envs = TestFixtures.localEnvs(2);
 
-        int[] first = new KMeans(3, 20, 1e-4, 7L).fit(source, envs, 2).labels(Points.wrapAll(points));
-        int[] second = new KMeans(3, 20, 1e-4, 7L).fit(source, envs, 2).labels(Points.wrapAll(points));
+        int[] first = new KMeans(3, 20, 1e-4, 7L).fit(source, envs, 2).labels(Points.vectorsOf(points));
+        int[] second = new KMeans(3, 20, 1e-4, 7L).fit(source, envs, 2).labels(Points.vectorsOf(points));
         assertArrayEqualsLabels(first, second);
     }
 
@@ -82,7 +82,7 @@ class KMeansSpec {
 
         KMeansModel model = new KMeans(2, 20, 1e-4, 42L, SphericalGeometry.INSTANCE)
             .fit(source, envs, 2);
-        int[] labels = model.labels(Points.wrapAll(points));
+        int[] labels = model.labels(Points.vectorsOf(points));
 
         assertEquals(labels[0], labels[1], "x-ray points share a cluster regardless of magnitude");
         assertEquals(labels[0], labels[2]);

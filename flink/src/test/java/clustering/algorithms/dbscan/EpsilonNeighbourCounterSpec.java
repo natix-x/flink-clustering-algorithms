@@ -1,15 +1,14 @@
 package clustering.algorithms.dbscan;
 
+import clustering.algorithms.dbscan.components.EpsilonNeighbourCounter;
 import clustering.TestFixtures;
 import clustering.core.EnvFactory;
 import clustering.core.PointSource;
 import clustering.distance.EuclideanDistance;
 import org.junit.jupiter.api.Test;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
 /** Step 2 of DBSCAN++: exact ε-degrees of every candidate against the FULL dataset.
@@ -59,7 +58,8 @@ class EpsilonNeighbourCounterSpec {
     }
 
     /** The regression, reproduced cheaply: 300 000 candidates are 2.4 MB of counts, over Flink's
-     *  2 MB collect-sink record limit — the exact failure a real {@code dbscanexact} run hit at
+     *  2 MB collect-sink record limit — the exact failure a real {@code dbscanpp} run (at
+     *  {@code coreSampleFraction: 1.0}) hit at
      *  m = 2·10⁶. The candidate count is what breaks it, NOT the data size, so 400 points are
      *  enough and the whole test is seconds rather than half an hour.
      *

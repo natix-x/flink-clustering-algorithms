@@ -1,23 +1,22 @@
 package clustering.algorithms.dbscan;
 
-import clustering.core.Points;
+import clustering.algorithms.dbscan.components.CandidateSelectionStrategy;
+import clustering.algorithms.dbscan.components.UniformSelection;
 import clustering.TestFixtures;
+import clustering.core.Points;
 import clustering.benchmark.config.AlgorithmSpec;
 import clustering.benchmark.registry.AlgorithmRegistry;
 import clustering.core.EnvFactory;
 import clustering.core.PointSource;
 import clustering.distance.EuclideanDistance;
 import org.junit.jupiter.api.Test;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Validates {@code dbscanpp} against a textbook DBSCAN written from the definition — the same
@@ -125,7 +124,7 @@ class DBSCANppSpec {
         assertEquals(2, TestFixtures.clustersOf(reference).size(),
             "fixture broken: the reference must find two clusters");
 
-        int[] labels = exact().fit(source, envs, 2).labels(Points.wrapAll(points));
+        int[] labels = exact().fit(source, envs, 2).labels(Points.vectorsOf(points));
 
         assertEquals(TestFixtures.clustersOf(reference), TestFixtures.clustersOf(labels),
             "exact DBSCAN++ must reproduce the textbook partition");
@@ -155,7 +154,7 @@ class DBSCANppSpec {
         for (double s : new double[] {0.5, 0.8}) {
             CoreLabelModel model = new DBSCANpp(Eps, MinPts, s, UniformSelection.INSTANCE, true,
                 2000, EuclideanDistance.INSTANCE, 7L).fit(source, envs, 2);
-            int[] labels = model.labels(Points.wrapAll(points));
+            int[] labels = model.labels(Points.vectorsOf(points));
             Set<Set<Integer>> clusters = TestFixtures.clustersOf(labels);
 
             assertTrue(!clusters.isEmpty(), "s=" + s + " produced no cluster at all");
@@ -175,23 +174,21 @@ class DBSCANppSpec {
             2000, EuclideanDistance.INSTANCE, 42L)
             .fit(TestFixtures.source(points), TestFixtures.localEnvs(2), 2);
 
-        assertTrue(TestFixtures.noiseOf(model.labels(Points.wrapAll(points))).isEmpty(),
+        assertTrue(TestFixtures.noiseOf(model.labels(Points.vectorsOf(points))).isEmpty(),
             "without the eps condition every point must get a cluster");
     }
 
     @Test
-    void allThreeSamplingStrategiesProduceAUsableClustering() {
+    void uniformSamplingProducesAUsableClustering() {
         List<double[]> points = fixture();
         PointSource source = TestFixtures.source(points);
         EnvFactory envs = TestFixtures.localEnvs(2);
 
-        for (String name : new String[] {"uniform", "linspace", "kcenter"}) {
-            CoreLabelModel model = new DBSCANpp(Eps, MinPts, 0.6,
-                CandidateSelectionStrategy.fromName(name, 3), true, 2000,
-                EuclideanDistance.INSTANCE, 3L).fit(source, envs, 2);
-            assertTrue(model.numClusters() >= 1, "sampling '" + name + "' produced no cluster");
-            assertTrue(model.corePoints().length > 0, "sampling '" + name + "' produced no core point");
-        }
+        CoreLabelModel model = new DBSCANpp(Eps, MinPts, 0.6,
+            CandidateSelectionStrategy.fromName("uniform"), true, 2000,
+            EuclideanDistance.INSTANCE, 3L).fit(source, envs, 2);
+        assertTrue(model.numClusters() >= 1, "sampling 'uniform' produced no cluster");
+        assertTrue(model.corePoints().length > 0, "sampling 'uniform' produced no core point");
     }
 
     @Test
@@ -202,7 +199,7 @@ class DBSCANppSpec {
             .fit(TestFixtures.source(points), TestFixtures.localEnvs(2), 2);
 
         assertEquals(0, model.numClusters());
-        int[] labels = model.labels(Points.wrapAll(points));
+        int[] labels = model.labels(Points.vectorsOf(points));
         assertTrue(TestFixtures.clustersOf(labels).isEmpty());
         assertEquals(points.size(), TestFixtures.noiseOf(labels).size());
     }
@@ -216,15 +213,18 @@ class DBSCANppSpec {
         EnvFactory envs = TestFixtures.localEnvs(2);
 
         int[] oneChunk = new DBSCANpp(Eps, MinPts, 1.0, UniformSelection.INSTANCE, true, 2000,
-            EuclideanDistance.INSTANCE, 42L).fit(source, envs, 2).labels(Points.wrapAll(points));
+            EuclideanDistance.INSTANCE, 42L).fit(source, envs, 2).labels(Points.vectorsOf(points));
         int[] manyChunks = new DBSCANpp(Eps, MinPts, 1.0, UniformSelection.INSTANCE, true, 7,
-            EuclideanDistance.INSTANCE, 42L).fit(source, envs, 2).labels(Points.wrapAll(points));
+            EuclideanDistance.INSTANCE, 42L).fit(source, envs, 2).labels(Points.vectorsOf(points));
 
         assertArrayEqualsInts(oneChunk, manyChunks);
     }
 
+    /** Exact classic DBSCAN has no separate registry entry — it is {@code dbscanpp} with
+     *  {@code coreSampleFraction: 1.0}. This pins the registry path to the same result as
+     *  constructing {@link DBSCANpp} directly. */
     @Test
-    void dbscanExactAliasIsTheSCodePathWithSPinnedToOne() {
+    void dbscanppWithFullCoreSampleFractionMatchesDirectConstruction() {
         List<double[]> points = fixture();
         PointSource source = TestFixtures.source(points);
         EnvFactory envs = TestFixtures.localEnvs(2);
@@ -233,38 +233,15 @@ class DBSCANppSpec {
         params.put("eps", Eps);
         params.put("minPts", MinPts);
         params.put("distance", "euclidean");
+        params.put("coreSampleFraction", 1.0);
+        params.put("sampling", "uniform");
         AlgorithmSpec spec = new AlgorithmSpec();
-        spec.name = "dbscanexact";
+        spec.name = "dbscanpp";
         spec.params = params;
 
-        int[] viaAlias = AlgorithmRegistry.create(spec).clusterer.fit(source, envs, 2).labels(Points.wrapAll(points));
-        int[] direct = exact().fit(source, envs, 2).labels(Points.wrapAll(points));
-        assertArrayEqualsInts(viaAlias, direct);
-    }
-
-    @Test
-    void dbscanExactRejectsSampledParamsInsteadOfIgnoringThem() {
-        Map<String, Object> sampled = new HashMap<>();
-        sampled.put("eps", Eps);
-        sampled.put("minPts", MinPts);
-        sampled.put("coreSampleFraction", 0.3);
-        AlgorithmSpec spec = new AlgorithmSpec();
-        spec.name = "dbscanexact";
-        spec.params = sampled;
-        assertTrue(assertThrows(IllegalArgumentException.class, () -> AlgorithmRegistry.create(spec))
-            .getMessage().contains("exact by definition"));
-
-        for (String key : new String[] {"sampling", "poolFactor"}) {
-            Map<String, Object> params = new HashMap<>();
-            params.put("eps", Eps);
-            params.put("minPts", MinPts);
-            params.put(key, key.equals("sampling") ? "kcenter" : 3);
-            AlgorithmSpec withSampling = new AlgorithmSpec();
-            withSampling.name = "dbscanexact";
-            withSampling.params = params;
-            assertTrue(assertThrows(IllegalArgumentException.class,
-                () -> AlgorithmRegistry.create(withSampling)).getMessage().contains(key));
-        }
+        int[] viaRegistry = AlgorithmRegistry.create(spec).clusterer.fit(source, envs, 2).labels(Points.vectorsOf(points));
+        int[] direct = exact().fit(source, envs, 2).labels(Points.vectorsOf(points));
+        assertArrayEqualsInts(viaRegistry, direct);
     }
 
     @Test

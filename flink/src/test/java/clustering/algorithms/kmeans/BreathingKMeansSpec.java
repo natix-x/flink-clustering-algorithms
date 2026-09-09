@@ -1,7 +1,7 @@
 package clustering.algorithms.kmeans;
 
-import clustering.core.Points;
 import clustering.TestFixtures;
+import clustering.core.Points;
 import clustering.core.EnvFactory;
 import clustering.core.EuclideanGeometry;
 import clustering.core.PointSource;
@@ -45,9 +45,9 @@ class BreathingKMeansSpec {
 
         KMeansModel plain = new KMeans(3, 20, 1e-4, 42L).fit(source, envs, 2);
         double plainError = TestFixtures.totalError(plain, points, plain.centroids(), EuclideanDistance.INSTANCE);
-        assertTrue(TestFixtures.clustersOf(plain.labels(Points.wrapAll(points))).size() == 3);
+        assertTrue(TestFixtures.clustersOf(plain.labels(Points.vectorsOf(points))).size() == 3);
         // Sanity: the fixture really is a trap for this seed — some cluster spans two blobs.
-        int[] plainLabels = plain.labels(Points.wrapAll(points));
+        int[] plainLabels = plain.labels(Points.vectorsOf(points));
         boolean plainMergedTwoBlobs = false;
         for (int i = 0; i < points.size(); i++) {
             for (int j = 0; j < points.size(); j++) {
@@ -60,7 +60,7 @@ class BreathingKMeansSpec {
 
         KMeansModel breathing = new BreathingKMeans(3, 5, 20, 1e-4, 42L,
             EuclideanGeometry.INSTANCE, 10).fit(source, envs, 2);
-        int[] labels = breathing.labels(Points.wrapAll(points));
+        int[] labels = breathing.labels(Points.vectorsOf(points));
         double breathingError =
             TestFixtures.totalError(breathing, points, breathing.centroids(), EuclideanDistance.INSTANCE);
 
