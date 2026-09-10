@@ -41,78 +41,35 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
-/** The one FLIP-176 bounded iteration every distributed k-medoids entry runs in.
- *
- *  <p><b>Why a scaffold and not three iteration bodies.</b> {@code clara}, {@code pamae} and
- *  {@code distfastpam} all want the identical Flink shape — read the source ONCE, cache the points
- *  per subtask, then drive an arbitrary number of rounds over that cache from a single-task driver
- *  — and differ only in what a round computes. Writing that shape three times cost ~400 lines of
- *  duplicated operator boilerplate and, more importantly, made "one algorithm = one job" a property
- *  each class had to re-earn: {@code pamae} silently ran THREE jobs (CLARA, candidate pool,
- *  refinement), i.e. three reads of storage and three job deployments, because its phases lived in
- *  three places. Here a phase is a round, so adding one costs a branch, not a job.
- *
- *  <p>The cost of a Flink job is why this matters more here than on Spark: a job deployment
- *  measured 4 934 ms of fixed cost on Ares against Spark's 1 314 ms, and — since Flink has no
- *  cross-job cache — every extra job also re-reads the source from storage. Spark's PAMAE pays
- *  neither (its jobs are cheap and its {@code persist} survives them), which is exactly the kind of
- *  engine asymmetry hard rule 2 says to implement around rather than mirror.
- *
- *  <h3>Round protocol</h3>
- *  <pre>
- *    round r:  every subtask   computePartial(r, state, itsCachedPoints)  -&gt; P
- *              [optional]      merge P's of a contiguous subtask GROUP    -&gt; P
- *              driver (p=1)    combine(r, state, partials in slot order)  -&gt; next state | stop
- *  </pre>
- *
- *  <p><b>The state does not ride back with the partials.</b> Each of the three old bodies attached
- *  the whole {@code IterationState} to every subtask's {@code PartialStats} so the combiner could
- *  read it — sending CLARA's candidate sets (numSamples·k·d doubles, 400 KB at k=10, d=1024) from
- *  all 64 subtasks into ONE task, every round, to re-learn something that task had emitted itself
- *  one round earlier. The combiner keeps its own copy instead, so a partial carries only its slot
- *  and its numbers.
- *
- *  <h3>Ordered merging</h3>
- *  Partials are folded in ascending {@code slot} order, never in arrival order, because these folds
- *  ARE the result: k-medoids picks an argmin over sums of doubles, so a completion-ordered merge
- *  makes two runs of one configuration disagree in the last bits and, occasionally, in the medoid.
- *  This is the counterpart of the Spark side's {@code PartitionAggregator.aggregateDoublesOrdered},
- *  and it was learned the same way there.
- *
- *  <p>{@code mergeFanIn > 1} inserts an intermediate stage that folds each contiguous group of
- *  {@code mergeFanIn} subtasks before the driver sees them, cutting what arrives at the single
- *  final task by that factor. It exists for {@code distfastpam}, whose partial is
- *  {@code n + n·k} doubles — 880 KB per subtask at n = 10 000, k = 10, i.e. 56 MB per round through
- *  one task at parallelism 64, every round. The grouping is by subtask RANGE
- *  ({@code slot / mergeFanIn}) and the partitioner sends a whole group to one task, so the fold
- *  order is still fully determined by slot indices and the tree changes nothing but the wire
- *  volume. */
+/**
+ * Scaffold for running bounded FLIP-176 distributed k-medoids iterations in Flink.
+ * Executes a compute-merge-combine protocol: reads the source once, caches points per subtask,
+ * and drives an arbitrary number of rounds over that cache.
+ * Partials are merged strictly in ascending slot order to guarantee deterministic results.
+ */
 public final class MedoidIteration {
 
     private MedoidIteration() {}
 
-    /** Base of every iteration state.
-     *
-     *  <p>{@link #stop} rides ALONG the state rather than in a wrapper record because Flink has to
-     *  serialize whatever crosses the feedback edge, and a wrapper holding the state behind an
-     *  {@code Object} field drops the whole graph to Kryo — which, on a JDK 17 build, does not even
-     *  initialise ({@code java.base does not "opens java.util"}). Every state here is a strict POJO
-     *  instead, so Flink serializes it field by field with no reflection into the JDK. */
+    /**
+     * Base for every iteration state.
+     * Must remain a strict POJO to ensure correct Flink field-by-field serialization.
+     */
     public abstract static class State implements Serializable {
-        /** Set by the framework from the round's {@link Decision}; read by the termination stream. */
         public boolean stop;
     }
 
-    /** Base of every per-subtask partial result.
-     *
-     *  <p>{@link #slot} is the subtask index as emitted, and the GROUP index after a merge stage.
-     *  It is the sort key of both folds, so it is what makes the run reproducible; the framework
-     *  sets it and a {@link RoundLogic} never should. */
+    /**
+     * Base for every per-subtask partial result.
+     * The {@code slot} is used as the sort key during merging to guarantee reproducible runs.
+     */
     public abstract static class Partial implements Serializable {
         public int slot;
     }
 
-    /** What the driver decided after folding one round's partials. */
+    /**
+     * Driver's decision after folding a round's partials.
+     */
     public static final class Decision<S> {
         public final S nextState;
         public final boolean stop;
@@ -122,40 +79,34 @@ public final class MedoidIteration {
             this.stop = stop;
         }
 
-        /** Run another round with {@code nextState}. */
         public static <S> Decision<S> next(S nextState) {
             return new Decision<>(nextState, false);
         }
 
-        /** Stop; {@code finalState} is what {@link #execute} returns. */
         public static <S> Decision<S> stop(S finalState) {
             return new Decision<>(finalState, true);
         }
     }
 
-    /** The algorithm-specific half of a round: what a subtask computes, and what the driver
-     *  concludes. Instances are deserialized ONCE per subtask and reused across rounds, so a
-     *  {@code transient} field is a legitimate per-subtask memo — which is how a payload that must
-     *  reach every worker (a candidate pool, the full candidate set) is broadcast on ONE round and
-     *  then omitted from the state for the rest of the run. */
+    /**
+     * The algorithm-specific logic for a single round.
+     * Defines what each subtask computes and how the driver combines those partials.
+     */
     public interface RoundLogic<S extends State, P extends Partial> extends Serializable {
 
-        /** This subtask's contribution for round {@code round}. Called once per round, after every
-         *  point has reached the cache; {@code points} is that cache and may be empty. */
         P computePartial(int round, S state, Iterable<WeightedPoint> points, int subtaskId) throws Exception;
 
-        /** Associative fold of two partials of the SAME round, {@code left.slot < right.slot}.
-         *  Only needed when {@code mergeFanIn > 1}. */
         default P merge(P left, P right) {
             throw new UnsupportedOperationException(
                 getClass().getName() + " has no merge(); do not pass mergeFanIn > 1");
         }
 
-        /** Driver-side (parallelism 1) fold of a round's partials, in ascending slot order. */
         Decision<S> combine(int round, S state, List<P> partials);
     }
 
-    /** Runs the iteration as ONE Flink job and returns the state the last round decided on. */
+    /**
+     * Runs the iteration as a single Flink job and returns the final decided state.
+     */
     public static <S extends State, P extends Partial> S execute(
             PointSource source,
             EnvFactory envFactory,
@@ -164,25 +115,24 @@ public final class MedoidIteration {
             Class<S> stateClass,
             Class<P> partialClass,
             RoundLogic<S, P> logic,
-            int mergeFanIn) {
-
+            int mergeFanIn
+    ) {
         TypeInformation<S> stateType = TypeInformation.of(stateClass);
         TypeInformation<P> partialType = TypeInformation.of(partialClass);
 
         StreamExecutionEnvironment env = envFactory.newEnv();
-        // FLIP-176 iterations require STREAMING; the AdaptiveBatchScheduler does not apply here,
-        // which is also why the source keeps the configured parallelism inside an iteration.
+        // FLIP-176 requires STREAMING mode.
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
 
-        DataStream<S> initStateStream =
-            env.fromCollection(Collections.singletonList(initialState), stateType);
+        DataStream<S> initStateStream = env.fromCollection(Collections.singletonList(initialState), stateType);
         DataStream<WeightedPoint> pointsStream = source.create(env);
 
         DataStreamList result = Iterations.iterateBoundedStreamsUntilTermination(
             DataStreamList.of(initStateStream),
             ReplayableDataStreamList.notReplay(pointsStream),
             IterationConfig.newBuilder().build(),
-            new Body<>(logic, initialState, stateType, partialType, mergeFanIn));
+            new Body<>(logic, initialState, stateType, partialType, mergeFanIn)
+        );
 
         return FlinkJobs.last(result.<S>get(0), jobName);
     }
@@ -195,8 +145,13 @@ public final class MedoidIteration {
         private final TypeInformation<P> partialType;
         private final int mergeFanIn;
 
-        Body(RoundLogic<S, P> logic, S initialState, TypeInformation<S> stateType,
-             TypeInformation<P> partialType, int mergeFanIn) {
+        Body(
+            RoundLogic<S, P> logic,
+            S initialState,
+            TypeInformation<S> stateType,
+            TypeInformation<P> partialType,
+            int mergeFanIn
+        ) {
             this.logic = logic;
             this.initialState = initialState;
             this.stateType = stateType;
@@ -213,9 +168,8 @@ public final class MedoidIteration {
                 .connect(stateStream.broadcast())
                 .transform("medoid-round", partialType, new RoundOperator<>(logic, stateType));
 
-            // Without this the ListStateWithCache below gets a null memory-segment pool and every
-            // cached point goes straight to io.tmp.dirs — see ManagedMemory.
-            ManagedMemory.forPointCache(partials);
+            // Required to initialize managed memory for the point cache to avoid spilling directly to io.tmp.dirs.
+            ManagedMemory.allocateForPointCache(partials);
 
             DataStream<P> folded = partials;
             if (mergeFanIn > 1) {
@@ -238,12 +192,14 @@ public final class MedoidIteration {
             return new IterationBodyResult(
                 DataStreamList.of(newState),
                 DataStreamList.of(newState),
-                terminationSignal);
+                terminationSignal
+            );
         }
     }
 
-    /** Sends a whole contiguous subtask group to one merge task, so a group is never split and the
-     *  fold order stays a function of slot indices alone. */
+    /**
+     * Partitions contiguous subtask groups to a single merge task to preserve slot-based fold order.
+     */
     private static final class GroupPartitioner implements Partitioner<Integer> {
         private final int fanIn;
 
@@ -257,9 +213,9 @@ public final class MedoidIteration {
         }
     }
 
-    /** Caches this subtask's points once and answers one {@link RoundLogic#computePartial} per
-     *  round. The cache is a {@code ListStateWithCache} (managed memory, spilling to disk) — the
-     *  Flink counterpart of Spark's {@code persist(MEMORY_AND_DISK)} on the input. */
+    /**
+     * Caches subtask points once and executes one computePartial round per epoch.
+     */
     private static final class RoundOperator<S extends State, P extends Partial>
             extends AbstractStreamOperator<P>
             implements TwoInputStreamOperator<WeightedPoint, S, P>, IterationListener<P> {
@@ -286,7 +242,8 @@ public final class MedoidIteration {
                 getContainingTask(),
                 getRuntimeContext(),
                 context,
-                config.getOperatorID());
+                config.getOperatorID()
+            );
         }
 
         @Override
@@ -329,7 +286,9 @@ public final class MedoidIteration {
         @Override public void processLatencyMarker2(LatencyMarker latencyMarker) {}
     }
 
-    /** Optional pre-fold: one merged partial per contiguous subtask group, folded in slot order. */
+    /**
+     * Optional pre-fold stage merging partials within subtask groups.
+     */
     private static final class MergeStage<S extends State, P extends Partial>
             implements FlatMapFunction<P, P>, IterationListener<P> {
 
@@ -376,8 +335,9 @@ public final class MedoidIteration {
         public void onIterationTerminated(Context context, Collector<P> out) {}
     }
 
-    /** The driver: folds a round's partials in slot order and decides what happens next. It keeps
-     *  the state itself rather than reading it back off the partials — see the class doc. */
+    /**
+     * Driver task that folds a round's partials in slot order and decides the next state.
+     */
     private static final class DecisionCombiner<S extends State, P extends Partial>
             implements FlatMapFunction<P, S>, IterationListener<S> {
 

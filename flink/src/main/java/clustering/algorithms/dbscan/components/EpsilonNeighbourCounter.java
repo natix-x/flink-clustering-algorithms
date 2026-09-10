@@ -140,7 +140,7 @@ public final class EpsilonNeighbourCounter {
                 .connect(stateStream.broadcast())
                 .transform("epsilon-count-chunk", PARTIAL_TYPE, new DistanceEvaluator(epsilon, distanceMetric));
 
-            ManagedMemory.forPointCache(partialCounts);
+            ManagedMemory.allocateForPointCache(partialCounts);
 
             DataStream<IterationUpdate> updates = partialCounts
                 .flatMap(new ResultsCombiner(candidatePoints, chunkSize))

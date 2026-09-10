@@ -1,6 +1,5 @@
 package clustering.distance;
 
-/** L1 distance. Singleton, mirrors the Scala {@code object ManhattanDistance}. */
 public final class ManhattanDistance implements DistanceMetric {
 
     public static final ManhattanDistance INSTANCE = new ManhattanDistance();

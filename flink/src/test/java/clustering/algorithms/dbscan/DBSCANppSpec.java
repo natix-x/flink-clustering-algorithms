@@ -1,6 +1,5 @@
 package clustering.algorithms.dbscan;
 
-import clustering.algorithms.dbscan.components.CandidateSelectionStrategy;
 import clustering.algorithms.dbscan.components.UniformSelection;
 import clustering.TestFixtures;
 import clustering.core.Points;
@@ -185,7 +184,7 @@ class DBSCANppSpec {
         EnvFactory envs = TestFixtures.localEnvs(2);
 
         CoreLabelModel model = new DBSCANpp(Eps, MinPts, 0.6,
-            CandidateSelectionStrategy.fromName("uniform"), true, 2000,
+            UniformSelection.fromName("uniform"), true, 2000,
             EuclideanDistance.INSTANCE, 3L).fit(source, envs, 2);
         assertTrue(model.numClusters() >= 1, "sampling 'uniform' produced no cluster");
         assertTrue(model.corePoints().length > 0, "sampling 'uniform' produced no core point");

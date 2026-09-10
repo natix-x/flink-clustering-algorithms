@@ -57,7 +57,7 @@ public final class Points {
     public static List<WeightedPoint> wrapAll(List<double[]> rows) {
         List<WeightedPoint> out = new ArrayList<>(rows.size());
         for (double[] row : rows) {
-            out.add(WeightedPoint.of(row));
+            out.add(WeightedPoint.withUnitWeight(row));
         }
         return out;
     }

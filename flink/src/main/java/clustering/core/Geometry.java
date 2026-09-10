@@ -2,28 +2,21 @@ package clustering.core;
 
 import clustering.distance.DistanceMetric;
 import org.apache.flink.ml.linalg.DenseVector;
+
 import java.io.Serializable;
 
-/** The space a centroid-based algorithm optimises in — a knob, not an algorithm
- *  (euclidean = Lloyd k-means, spherical = Dhillon &amp; Modha 2001). Java mirror of the
- *  Spark {@code clustering.core.Geometry}; the metric is fixed by the geometry, not a
- *  free config param.
- *
- *  Four hooks:
- *    - {@link #prepare} — one transformation of the fit input. On Spark this rewrites the
- *      {@code features} column of a DataFrame; here it WRAPS the {@link PointSource}, so the
- *      normalisation becomes a map operator inside every job the algorithm runs (nothing is
- *      materialised twice). Idempotent, so an outer algorithm may prepare and let an inner
- *      one prepare again;
- *    - {@link #fitDistance} — the metric used inside the iteration loop, on prepared data;
- *    - {@link #modelDistance} — the metric the fitted model uses to label RAW data, since
- *      evaluation labels the untransformed source (cosine is scale-invariant, so labels agree);
- *    - {@link #project} — the projection applied to each updated centroid. */
+/**
+ * Defines the geometric space for centroid-based clustering algorithms.
+ * Encapsulates data preparation, distance metrics, and centroid projections.
+ */
 public interface Geometry extends Serializable {
 
-    /** Registry name, as it appears in a run config. */
     String name();
 
+    /**
+     * Wraps the source with necessary spatial transformations (e.g., normalization).
+     * Transformations are evaluated lazily as map operators.
+     */
     PointSource prepare(PointSource source);
 
     DistanceMetric fitDistance();
@@ -32,21 +25,25 @@ public interface Geometry extends Serializable {
 
     DenseVector project(DenseVector centroid);
 
-    /** L2-normalises {@code v} into a NEW array; a zero vector is returned unchanged (both
-     *  cosine variants already treat it as maximally distant). */
-    static double[] l2Normalize(double[] v) {
+    /**
+     * Returns a new L2-normalized array. Zero vectors are returned unchanged.
+     */
+    static double[] l2Normalize(double[] vector) {
         double sumOfSquares = 0.0;
-        for (double x : v) {
-            sumOfSquares += x * x;
+        for (double value : vector) {
+            sumOfSquares += value * value;
         }
+
         double norm = Math.sqrt(sumOfSquares);
         if (norm == 0.0) {
-            return v;
+            return vector;
         }
-        double[] out = new double[v.length];
-        for (int i = 0; i < v.length; i++) {
-            out[i] = v[i] / norm;
+
+        double[] normalizedVector = new double[vector.length];
+        for (int i = 0; i < vector.length; i++) {
+            normalizedVector[i] = vector[i] / norm;
         }
-        return out;
+
+        return normalizedVector;
     }
 }

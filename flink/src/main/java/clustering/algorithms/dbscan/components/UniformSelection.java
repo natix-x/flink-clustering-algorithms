@@ -18,21 +18,38 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * Uniform random subsampling strategy for candidate selection.
+ * Uniform random subsampling for DBSCAN++ candidate core points.
  * Uses oversampled Bernoulli trials followed by exact truncation to achieve the target sample size.
+ *
+ * <p>This used to sit behind a {@code CandidateSelectionStrategy} interface, but uniform is the
+ * only selection ever implemented — the interface was pure indirection. If a second strategy
+ * shows up, re-extract the interface then.
  */
-public final class UniformSelection implements CandidateSelectionStrategy {
+public final class UniformSelection {
 
     public static final UniformSelection INSTANCE = new UniformSelection();
 
     private UniformSelection() {}
 
-    @Override
+    /** Resolves a {@code sampling} param value. */
+    public static UniformSelection fromName(String name) {
+        switch (name.toLowerCase()) {
+            case "uniform":
+                return INSTANCE;
+            default:
+                throw new IllegalArgumentException(
+                    "Unknown candidate sampling: '" + name + "'. Known: uniform"
+                );
+        }
+    }
+
     public String strategyName() {
         return "uniform";
     }
 
-    @Override
+    /**
+     * Selects at most {@code targetCount} candidates from the source.
+     */
     public double[][] selectCandidates(PointSource source, EnvFactory envFactory, long totalPoints,
                                        int targetCount, long seed, DistanceMetric distanceMetric) {
         if (targetCount >= totalPoints) {

@@ -1,8 +1,8 @@
 package clustering.algorithms.dbscan;
 
-import clustering.algorithms.dbscan.components.CandidateSelectionStrategy;
 import clustering.algorithms.dbscan.components.EpsilonGraphComponents;
 import clustering.algorithms.dbscan.components.EpsilonNeighbourCounter;
+import clustering.algorithms.dbscan.components.UniformSelection;
 import clustering.core.Clusterer;
 import clustering.core.Datasets;
 import clustering.core.EnvFactory;
@@ -31,15 +31,27 @@ public class DBSCANpp implements Clusterer {
     private final double epsilon;
     private final int minPoints;
     private final double coreSampleFraction;
-    private final CandidateSelectionStrategy candidateSelector;
+    private final UniformSelection candidateSelector;
     private final boolean strictEpsilonCheck;
     private final int chunkSize;
     private final DistanceMetric distanceMetric;
     private final long seed;
 
     public DBSCANpp(double epsilon, int minPoints, double coreSampleFraction,
-                    CandidateSelectionStrategy candidateSelector, boolean strictEpsilonCheck,
+                    UniformSelection candidateSelector, boolean strictEpsilonCheck,
                     int chunkSize, DistanceMetric distanceMetric, long seed) {
+        validateArgs(epsilon, minPoints, coreSampleFraction, chunkSize);
+        this.epsilon = epsilon;
+        this.minPoints = minPoints;
+        this.coreSampleFraction = coreSampleFraction;
+        this.candidateSelector = candidateSelector;
+        this.strictEpsilonCheck = strictEpsilonCheck;
+        this.chunkSize = chunkSize;
+        this.distanceMetric = distanceMetric;
+        this.seed = seed;
+    }
+
+    private static void validateArgs(double epsilon, int minPoints, double coreSampleFraction, int chunkSize) {
         if (!(epsilon > 0.0) || Double.isNaN(epsilon)) {
             throw new IllegalArgumentException("epsilon must be > 0, got " + epsilon);
         }
@@ -52,14 +64,6 @@ public class DBSCANpp implements Clusterer {
         if (chunkSize < 1) {
             throw new IllegalArgumentException("chunkSize must be >= 1, got " + chunkSize);
         }
-        this.epsilon = epsilon;
-        this.minPoints = minPoints;
-        this.coreSampleFraction = coreSampleFraction;
-        this.candidateSelector = candidateSelector;
-        this.strictEpsilonCheck = strictEpsilonCheck;
-        this.chunkSize = chunkSize;
-        this.distanceMetric = distanceMetric;
-        this.seed = seed;
     }
 
     @Override

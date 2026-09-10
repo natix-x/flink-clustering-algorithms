@@ -189,7 +189,7 @@ public final class CentroidIteration {
                 .connect(centroids.broadcast())
                 .transform("centroid-partial-assign", PARTIAL_STATS_TYPE, new PartialAssigner(distanceMetric));
 
-            ManagedMemory.forPointCache(partialStats);
+            ManagedMemory.allocateForPointCache(partialStats);
 
             DataStream<IterationUpdate> updates = partialStats
                 .flatMap(new StatsCombiner(driver, initialCentroids))
@@ -444,7 +444,7 @@ public final class CentroidIteration {
             throw new IllegalArgumentException("Target centroids count must be >= 1, got " + targetCentroids);
         }
 
-        List<WeightedPoint> candidates = Datasets.collectHead(preparedSource, envFactory, Math.max(targetCentroids * 30L, 1000L));
+        List<WeightedPoint> candidates = Datasets.takeFirst(preparedSource, envFactory, Math.max(targetCentroids * 30L, 1000L));
         int numCandidates = candidates.size();
 
         if (numCandidates < targetCentroids) {

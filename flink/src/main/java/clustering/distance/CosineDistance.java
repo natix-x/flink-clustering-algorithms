@@ -1,8 +1,9 @@
 package clustering.distance;
 
-/** Cosine distance = {@code 1 - cos(theta)}. Singleton, mirrors the Scala
- *  {@code object CosineDistance}. Returns {@code 1.0} when either vector is zero
- *  (undefined cosine -> maximal dissimilarity), matching the Spark implementation. */
+/**
+ * Computes the cosine distance (1 - cos(theta)) between two vectors.
+ * Returns 1.0 (maximal dissimilarity) if either vector has a magnitude of zero.
+ */
 public final class CosineDistance implements DistanceMetric {
 
     public static final CosineDistance INSTANCE = new CosineDistance();
@@ -10,20 +11,24 @@ public final class CosineDistance implements DistanceMetric {
     private CosineDistance() {}
 
     @Override
-    public double compute(double[] x, double[] y) {
-        double dot = 0.0;
-        double normA = 0.0;
-        double normB = 0.0;
-        for (int i = 0; i < x.length; i++) {
-            dot += x[i] * y[i];
-            normA += x[i] * x[i];
-            normB += y[i] * y[i];
+    public double compute(double[] vectorA, double[] vectorB) {
+        double dotProduct = 0.0;
+        double sumOfSquaresA = 0.0;
+        double sumOfSquaresB = 0.0;
+
+        for (int i = 0; i < vectorA.length; i++) {
+            dotProduct += vectorA[i] * vectorB[i];
+            sumOfSquaresA += vectorA[i] * vectorA[i];
+            sumOfSquaresB += vectorB[i] * vectorB[i];
         }
-        normA = Math.sqrt(normA);
-        normB = Math.sqrt(normB);
-        if (normA == 0.0 || normB == 0.0) {
+
+        double magnitudeA = Math.sqrt(sumOfSquaresA);
+        double magnitudeB = Math.sqrt(sumOfSquaresB);
+
+        if (magnitudeA == 0.0 || magnitudeB == 0.0) {
             return 1.0;
         }
-        return 1.0 - (dot / (normA * normB));
+
+        return 1.0 - (dotProduct / (magnitudeA * magnitudeB));
     }
 }

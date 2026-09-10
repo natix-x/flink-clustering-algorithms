@@ -167,7 +167,7 @@ public class BisectingKMeans implements Clusterer {
                 .connect(state.broadcast())
                 .transform("bisecting-partial", PARTIAL_STATS_TYPE, new PartitionEvaluator(geometry.fitDistance(), seed));
 
-            ManagedMemory.forPointCache(partialStats);
+            ManagedMemory.allocateForPointCache(partialStats);
 
             DataStream<IterationUpdate> updates = partialStats
                 .flatMap(new StatsCombiner(targetK, maxIterations, tolerance, geometry, seed, numTrials, selectionStrategy))

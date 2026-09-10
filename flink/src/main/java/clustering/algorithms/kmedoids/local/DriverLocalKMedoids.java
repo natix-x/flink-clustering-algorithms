@@ -19,7 +19,7 @@ public interface DriverLocalKMedoids extends Clusterer {
     KMedoidsModel fitLocal(double[][] points, double[] weights);
 
     default KMedoidsModel fitLocal(double[][] points) {
-        return fitLocal(points, Weights.unit(points.length));
+        return fitLocal(points, Weights.generateUnitWeights(points.length));
     }
 
     @Override

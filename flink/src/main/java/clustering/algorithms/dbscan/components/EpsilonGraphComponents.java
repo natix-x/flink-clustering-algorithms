@@ -1,6 +1,5 @@
 package clustering.algorithms.dbscan.components;
 
-import clustering.algorithms.dbscan.utils.ScanProgress;
 import clustering.core.EnvFactory;
 import clustering.core.FlinkJobs;
 import clustering.distance.DistanceMetric;
@@ -68,16 +67,12 @@ public final class EpsilonGraphComponents {
             .name("epsilon-graph-scan");
 
         UnionFind componentTracker = new UnionFind(corePoints.length);
-        ScanProgress progressTracker = new ScanProgress(corePoints.length);
-        long[] completedRows = {0L};
 
         FlinkJobs.consume(edgeStream, "dbscanpp-epsilon-graph", edgeRecord -> {
             int sourceRow = edgeRecord[0];
             for (int t = 1; t < edgeRecord.length; t++) {
                 componentTracker.union(sourceRow, edgeRecord[t]);
             }
-            completedRows[0]++;
-            progressTracker.report((int) completedRows[0], "distributed");
         });
 
         return componentTracker.componentIds();

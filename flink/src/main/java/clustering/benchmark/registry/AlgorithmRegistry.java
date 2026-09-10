@@ -1,6 +1,5 @@
 package clustering.benchmark.registry;
 
-import clustering.algorithms.dbscan.components.CandidateSelectionStrategy;
 import clustering.algorithms.dbscan.components.UniformSelection;
 import clustering.algorithms.kmeans.hierarchical.BisectingKMeans;
 import clustering.algorithms.kmedoids.distributed.DistributedFastPAM;
@@ -186,7 +185,7 @@ public final class AlgorithmRegistry {
             Params.intParam(params, "minPts"),
             // The universal accuracy-vs-cost knob; required, so no run hides which m it used.
             Params.doubleParam(params, "coreSampleFraction"),
-            CandidateSelectionStrategy.fromName(
+            UniformSelection.fromName(
                 Params.stringParam(params, "sampling", "uniform")),
             // assign: 'eps' = classic DBSCAN noise semantics, 'closest' = the paper's rule.
             assignWithinEps(Params.stringParam(params, "assign", "eps")),

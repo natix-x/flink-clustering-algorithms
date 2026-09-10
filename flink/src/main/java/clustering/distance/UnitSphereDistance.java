@@ -1,16 +1,9 @@
 package clustering.distance;
 
-import clustering.core.SphericalGeometry;
-
-/** Cosine distance specialised to <b>unit-norm</b> vectors: {@code 1 - <a, b>}.
- *
- *  Identical to {@link CosineDistance} whenever both arguments are L2-normalised, but it
- *  skips the two {@code sqrt(sum x^2)} passes — exactly the per-iteration saving spherical
- *  k-means is supposed to deliver at high dimensionality.
- *
- *  Deliberately NOT registered in {@code DistanceRegistry}: it is only correct on normalised
- *  data, so it may not be selected from a config. It is chosen internally by
- *  {@link clustering.core.SphericalGeometry}, which guarantees the normalisation. */
+/**
+ * Computes the cosine distance specialized for unit-norm (L2-normalized) vectors.
+ * Assumes inputs are already normalized to safely skip magnitude calculations.
+ */
 public final class UnitSphereDistance implements DistanceMetric {
 
     public static final UnitSphereDistance INSTANCE = new UnitSphereDistance();
@@ -18,11 +11,13 @@ public final class UnitSphereDistance implements DistanceMetric {
     private UnitSphereDistance() {}
 
     @Override
-    public double compute(double[] a, double[] b) {
-        double dot = 0.0;
-        for (int i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
+    public double compute(double[] vectorA, double[] vectorB) {
+        double dotProduct = 0.0;
+
+        for (int i = 0; i < vectorA.length; i++) {
+            dotProduct += vectorA[i] * vectorB[i];
         }
-        return 1.0 - dot;
+
+        return 1.0 - dotProduct;
     }
 }

@@ -70,7 +70,7 @@ public final class SyntheticDataSource implements DataSource {
             Random rng = new Random(seed + index * 0x9E3779B97F4A7C15L);
             // Unit weight: the generator emits individual points, so a synthetic run is the
             // unit-weight case of the weighted objective.
-            return WeightedPoint.of(samplePoint(rng));
+            return WeightedPoint.withUnitWeight(samplePoint(rng));
         }
     }
 

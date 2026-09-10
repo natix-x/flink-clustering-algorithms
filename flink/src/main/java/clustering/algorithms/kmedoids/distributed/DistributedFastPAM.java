@@ -18,36 +18,16 @@ import java.util.List;
 
 /**
  * Distributed FastPAM1 (BUILD + SWAP) as a single Flink ML bounded-iteration job.
- *
- * <p>Every point is a candidate medoid, so a round's accumulator is the FastPAM1 decomposition
- * {@code shared[n] + removeLoss[n·k]} and one round applies the single best improving swap.
- *
- * <h3>The candidates are gathered by the job, not handed to it</h3>
- * The candidate array used to be built by a {@code Datasets.collectAll} before the job: a SECOND
- * full read of the source, taken at parallelism 1, whose only purpose was to put {@code n·d} doubles
- * in the operator's closure — from where Flink shipped them to every subtask anyway. Round 0 now
- * gathers them from the point cache instead and publishes them on the feedback edge, so the
- * broadcast volume is unchanged and the extra read and the single-threaded collect are gone.
- *
- * <p>The price is that candidate ORDER becomes subtask-major rather than source order, which moves
- * tie-breaking. Run-to-run reproducibility is untouched (partials are folded in ascending subtask
- * order), and cross-engine identity was never available here anyway — Spark's candidate array is in
- * partition order, which is not the Flink source order either.
- *
- * <h3>Why this one folds through a tree</h3>
- * Its partial is {@code n·(k+1)} doubles — 880 KB per subtask at n = 10 000, k = 10, i.e. 56 MB per
- * round arriving at ONE task at parallelism 64, for every BUILD and SWAP round of the run. The
- * iteration therefore runs with a merge stage: contiguous groups of {@link #MERGE_FAN_IN} subtasks
- * are folded first, cutting what reaches the driver by that factor. Groups are subtask RANGES and a
- * group is never split across merge tasks, so the fold order is still fixed by slot index and the
- * result is bit-identical to the flat fold.
+ * Every point is evaluated as a candidate medoid using the FastPAM1 decomposition.
+ * Executes gathering, building, and swapping phases within a single bounded iteration,
+ * utilizing a merge stage to reduce driver-side folding costs.
  */
 public class DistributedFastPAM implements Clusterer {
 
     private static final int PHASE_GATHER = 0;
     private static final int PHASE_SEARCH = 1;
 
-    /** Subtasks per pre-fold group. See the class doc. */
+    /** Subtasks per pre-fold group to reduce the volume arriving at the driver. */
     private static final int MERGE_FAN_IN = 8;
 
     private final int targetK;
@@ -66,10 +46,11 @@ public class DistributedFastPAM implements Clusterer {
         initial.phase = PHASE_GATHER;
 
         FastPamState finalState = MedoidIteration.execute(
-            source, envFactory, "distfastpam-fit",
-            initial, FastPamState.class, FastPamPartial.class,
-            new FastPamLogic(targetK, maxIterations, distanceMetric),
-            MERGE_FAN_IN);
+                source, envFactory, "distfastpam-fit",
+                initial, FastPamState.class, FastPamPartial.class,
+                new FastPamLogic(targetK, maxIterations, distanceMetric),
+                MERGE_FAN_IN
+        );
 
         if (finalState == null || finalState.bestMedoids == null) {
             throw new IllegalStateException("distfastpam produced no medoids");
@@ -84,7 +65,6 @@ public class DistributedFastPAM implements Clusterer {
 
     public static final class FastPamState extends MedoidIteration.State {
         public int phase;
-        /** All candidates; published on the ONE round that enters the search, null afterwards. */
         public double[][] candidates;
         public int[] medoids;
         public int numSelected;
@@ -105,22 +85,18 @@ public class DistributedFastPAM implements Clusterer {
     }
 
     public static final class FastPamPartial extends MedoidIteration.Partial {
-        /** GATHER round: this subtask's points, in cache order. */
         public double[][] gathered;
-        /** BUILD / SWAP round: the FastPAM1 accumulator. */
         public double[] sums;
 
         public FastPamPartial() {}
     }
 
-    private static final class FastPamLogic
-            implements MedoidIteration.RoundLogic<FastPamState, FastPamPartial> {
+    private static final class FastPamLogic implements MedoidIteration.RoundLogic<FastPamState, FastPamPartial> {
 
         private final int targetK;
         private final int maxIterations;
         private final DistanceMetric distanceMetric;
 
-        /** Per-subtask memo, so the candidates are broadcast once and not once per round. */
         private transient double[][] candidates;
 
         FastPamLogic(int targetK, int maxIterations, DistanceMetric distanceMetric) {
@@ -131,13 +107,12 @@ public class DistributedFastPAM implements Clusterer {
 
         @Override
         public FastPamPartial computePartial(
-                int round, FastPamState state, Iterable<WeightedPoint> points, int subtaskId) {
-
+                int round, FastPamState state, Iterable<WeightedPoint> points, int subtaskId
+        ) {
             FastPamPartial partial = new FastPamPartial();
             if (state.phase == PHASE_GATHER) {
                 List<double[]> gathered = new ArrayList<>();
                 for (WeightedPoint point : points) {
-                    // Cached records are reused between rounds, so the coordinates are copied out.
                     gathered.add(point.features.values.clone());
                 }
                 partial.gathered = gathered.toArray(new double[0][]);
@@ -147,9 +122,11 @@ public class DistributedFastPAM implements Clusterer {
             if (state.candidates != null) {
                 candidates = state.candidates;
             }
+
             partial.sums = state.numSelected < targetK
-                ? aggregateBuildPhase(state, points)
-                : aggregateSwapPhase(state, points);
+                    ? aggregateBuildPhase(state, points)
+                    : aggregateSwapPhase(state, points);
+
             return partial;
         }
 
@@ -215,7 +192,9 @@ public class DistributedFastPAM implements Clusterer {
 
                 for (int i = 0; i < numCandidates; i++) {
                     double candidateDist = distanceMetric.compute(candidates[i], coords);
-                    double sharedContribution = candidateDist < closestDist ? weight * (candidateDist - closestDist) : 0.0;
+                    double sharedContribution = candidateDist < closestDist
+                            ? weight * (candidateDist - closestDist)
+                            : 0.0;
                     accumulator[i] += sharedContribution;
 
                     double removeLoss = weight * (Math.min(secondClosestDist, candidateDist) - closestDist);
@@ -242,8 +221,8 @@ public class DistributedFastPAM implements Clusterer {
 
         @Override
         public MedoidIteration.Decision<FastPamState> combine(
-                int round, FastPamState state, List<FastPamPartial> partials) {
-
+                int round, FastPamState state, List<FastPamPartial> partials
+        ) {
             if (state.phase == PHASE_GATHER) {
                 return afterGather(state, partials);
             }
@@ -251,15 +230,17 @@ public class DistributedFastPAM implements Clusterer {
         }
 
         private MedoidIteration.Decision<FastPamState> afterGather(
-                FastPamState state, List<FastPamPartial> partials) {
-
+                FastPamState state, List<FastPamPartial> partials
+        ) {
             List<double[]> collected = new ArrayList<>();
             for (FastPamPartial partial : partials) {
                 java.util.Collections.addAll(collected, partial.gathered);
             }
+
             if (collected.size() < targetK) {
-                throw new IllegalArgumentException("Dataset too small: n=" + collected.size()
-                    + " points but k=" + targetK + " medoids requested.");
+                throw new IllegalArgumentException(
+                        "Dataset too small: n=" + collected.size() + " points but k=" + targetK + " medoids requested."
+                );
             }
             candidates = collected.toArray(new double[0][]);
 
@@ -270,14 +251,16 @@ public class DistributedFastPAM implements Clusterer {
             Arrays.fill(next.medoids, -1);
             next.numSelected = 0;
             next.completedSwapRounds = 0;
+
             return MedoidIteration.Decision.next(next);
         }
 
         private MedoidIteration.Decision<FastPamState> afterSearchRound(
-                FastPamState state, List<FastPamPartial> partials) {
-
+                FastPamState state, List<FastPamPartial> partials
+        ) {
             int numCandidates = candidates.length;
             double[] globalSums = new double[partials.get(0).sums.length];
+
             for (FastPamPartial partial : partials) {
                 for (int i = 0; i < globalSums.length; i++) {
                     globalSums[i] += partial.sums[i];
@@ -285,7 +268,7 @@ public class DistributedFastPAM implements Clusterer {
             }
 
             FastPamState next = state.copy();
-            next.candidates = null;   // every worker memoised it on the entering round
+            next.candidates = null;
             boolean stop;
 
             if (state.numSelected < targetK) {
@@ -293,9 +276,10 @@ public class DistributedFastPAM implements Clusterer {
                 for (int i = 0; i < state.numSelected; i++) {
                     excluded[state.medoids[i]] = true;
                 }
+
                 int nextIndex = (state.numSelected == 0)
-                    ? findMinExcluding(globalSums, excluded)
-                    : findMaxExcluding(globalSums, excluded);
+                        ? findMinExcluding(globalSums, excluded)
+                        : findMaxExcluding(globalSums, excluded);
 
                 next.medoids[state.numSelected] = nextIndex;
                 next.numSelected = state.numSelected + 1;
@@ -321,20 +305,21 @@ public class DistributedFastPAM implements Clusterer {
                         }
                     }
                 }
+
                 next.completedSwapRounds = state.completedSwapRounds + 1;
                 boolean isImprovement = SwapMove.isImprovement(bestMove);
                 if (isImprovement) {
                     next.medoids[bestMove.targetSlot] = bestMove.candidateIdx;
                 }
+
                 stop = !isImprovement || next.completedSwapRounds >= maxIterations;
             }
 
             if (stop) {
                 next.bestMedoids = extractSelected(candidates, next.medoids, targetK);
             }
-            return stop
-                ? MedoidIteration.Decision.stop(next)
-                : MedoidIteration.Decision.next(next);
+
+            return stop ? MedoidIteration.Decision.stop(next) : MedoidIteration.Decision.next(next);
         }
     }
 

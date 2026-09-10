@@ -13,29 +13,20 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Distributed medoid update over the entire dataset — phase II of PAMAE (Song et al., KDD 2017).
- *
- * <p>One round is one Voronoi update: assign every point to its nearest current medoid, and for
- * every cluster pick the candidate from the pool that minimises the weighted distance sum WITHIN
- * that cluster. Because a candidate only ever competes inside the cluster it belongs to, one round
- * costs {@code k + |pool| / k} distance computations per point rather than {@code |pool|}.
- *
- * <p>The class is split in two on purpose. The static half ({@link #planFor}, {@link #accumulate},
- * {@link #chooseMedoids}) is the refinement MATHS and has no Flink in it; {@link #refine} is the
- * standalone entry point that runs those rounds as one bounded iteration. {@code pamae} uses the
- * static half directly, as the tail phases of the single job that also does its CLARA seeding — so
- * the two paths cannot drift, and the specs that exercise {@link #refine} are exercising the code
- * {@code pamae} actually runs.
+ * Distributed medoid update over the entire dataset — Phase II of PAMAE.
+ * Executes Voronoi updates by assigning every point to its nearest current medoid,
+ * and electing the candidate from the pool that minimizes the weighted distance sum within each cluster.
  */
 public final class MedoidRefinement {
 
-    /** Rounds of one refinement job are cheap folds of {@code |pool| + k} doubles, so there is
-     *  nothing for an intermediate merge stage to save. */
+    /** No intermediate merge stage is required as refinement rounds are lightweight folds. */
     private static final int NO_MERGE_STAGE = 0;
 
     private MedoidRefinement() {}
 
-    /** Result of the refinement process containing the final medoids and cost. */
+    /**
+     * Result of the refinement process containing the final medoids and total cost.
+     */
     public static final class Result {
         public final DenseVector[] medoids;
         public final double cost;
@@ -49,22 +40,17 @@ public final class MedoidRefinement {
     }
 
     // ---------------------------------------------------------------------------------------
-    // The refinement maths — shared with the merged clara/pamae search, no Flink involved.
+    // Refinement Mathematics
     // ---------------------------------------------------------------------------------------
 
-    /** Which candidates compete in which cluster, given the current medoids.
-     *
-     *  <p>The incumbent medoids are appended to the pool, so a slot can always re-elect what it
-     *  already holds — which is what makes a round unable to increase the objective. */
+    /**
+     * Maps candidates to their assigned clusters based on the current medoids.
+     * Incumbent medoids are appended to the pool to allow re-election.
+     */
     public static final class Plan implements Serializable {
-        /** Candidate indices (pool first, then the k incumbents), grouped by cluster. */
         public int[] candidateOrder;
-        /** {@code clusterBounds[c] .. clusterBounds[c+1]} is cluster c's slice of the order. */
         public int[] clusterBounds;
 
-        /** Public and mutable, with a no-arg constructor, because it is a field of a state that
-         *  crosses the iteration's feedback edge: anything Flink cannot read as a POJO falls back
-         *  to Kryo, which on a JDK 17 build fails to initialise at all. */
         public Plan() {}
 
         Plan(int[] candidateOrder, int[] clusterBounds) {
@@ -73,7 +59,9 @@ public final class MedoidRefinement {
         }
     }
 
-    /** Groups pool ∪ medoids by the cluster each candidate falls in. */
+    /**
+     * Groups candidate pool and current medoids by the cluster each candidate falls into.
+     */
     public static Plan planFor(double[][] medoids, double[][] pool, DistanceMetric distanceMetric) {
         int numClusters = medoids.length;
         int totalCandidates = pool.length + numClusters;
@@ -98,7 +86,9 @@ public final class MedoidRefinement {
         return new Plan(order, bounds);
     }
 
-    /** The candidates of a {@link Plan}, in plan order. */
+    /**
+     * Retrieves candidate coordinates ordered according to the evaluation plan.
+     */
     public static double[][] materialize(Plan plan, double[][] pool, double[][] medoids) {
         double[][] materialized = new double[plan.candidateOrder.length][];
         for (int i = 0; i < plan.candidateOrder.length; i++) {
@@ -108,14 +98,16 @@ public final class MedoidRefinement {
         return materialized;
     }
 
-    /** One subtask's share of the per-candidate cost sums. */
+    /**
+     * Computes one subtask's share of the per-candidate cost sums.
+     */
     public static double[] accumulate(
             Iterable<WeightedPoint> points,
             double[][] medoids,
             double[][] activeCandidates,
             int[] clusterBounds,
-            DistanceMetric distanceMetric) {
-
+            DistanceMetric distanceMetric
+    ) {
         double[] costs = new double[activeCandidates.length];
         for (WeightedPoint point : points) {
             double[] coordinates = point.features.values;
@@ -129,7 +121,9 @@ public final class MedoidRefinement {
         return costs;
     }
 
-    /** The medoid set a round elects, and whether it actually moved. */
+    /**
+     * The medoid set elected by a round and whether it changed from the previous state.
+     */
     public static final class Outcome {
         public final double[][] medoids;
         public final double cost;
@@ -142,20 +136,23 @@ public final class MedoidRefinement {
         }
     }
 
-    /** Picks each cluster's cheapest candidate from the globally summed costs. */
+    /**
+     * Picks each cluster's cheapest candidate based on globally summed costs.
+     */
     public static Outcome chooseMedoids(
             double[][] activeCandidates,
             int[] clusterBounds,
             double[] candidateCosts,
-            double[][] currentMedoids) {
-
+            double[][] currentMedoids
+    ) {
         int numClusters = currentMedoids.length;
         double[][] updated = new double[numClusters][];
         double updatedCost = 0.0;
 
         for (int cluster = 0; cluster < numClusters; cluster++) {
             int best = findBestCandidateForCluster(
-                cluster, activeCandidates, clusterBounds, candidateCosts, currentMedoids);
+                cluster, activeCandidates, clusterBounds, candidateCosts, currentMedoids
+            );
             if (best < 0) {
                 updated[cluster] = currentMedoids[cluster];
             } else {
@@ -167,17 +164,20 @@ public final class MedoidRefinement {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Standalone entry point: the rounds above as ONE bounded iteration.
+    // Flink Iteration Entry Point
     // ---------------------------------------------------------------------------------------
 
+    /**
+     * Runs the distributed refinement rounds as a single bounded iteration.
+     */
     public static Result refine(
             PointSource source,
             EnvFactory envFactory,
             DenseVector[] initialMedoids,
             DenseVector[] candidatePool,
             DistanceMetric distanceMetric,
-            int maxIterations) {
-
+            int maxIterations
+    ) {
         if (maxIterations < 1) {
             return new Result(initialMedoids, Double.MAX_VALUE, 0);
         }
@@ -196,7 +196,8 @@ public final class MedoidRefinement {
             source, envFactory, "pamae-refine",
             initialState, RefineState.class, RefinePartial.class,
             new RefineLogic(pool, maxIterations, distanceMetric),
-            NO_MERGE_STAGE);
+            NO_MERGE_STAGE
+        );
 
         if (finalState == null) {
             return new Result(initialMedoids, Double.MAX_VALUE, 0);
@@ -209,7 +210,6 @@ public final class MedoidRefinement {
         return new Result(finalMedoids, finalState.cost, finalState.iterationCount);
     }
 
-    /** Iteration state tracking current medoids and candidate grouping. */
     public static final class RefineState extends MedoidIteration.State {
         public double[][] medoids;
         public Plan plan;
@@ -225,8 +225,7 @@ public final class MedoidRefinement {
         public RefinePartial() {}
     }
 
-    private static final class RefineLogic
-            implements MedoidIteration.RoundLogic<RefineState, RefinePartial> {
+    private static final class RefineLogic implements MedoidIteration.RoundLogic<RefineState, RefinePartial> {
 
         private final double[][] pool;
         private final int maxIterations;
@@ -240,12 +239,13 @@ public final class MedoidRefinement {
 
         @Override
         public RefinePartial computePartial(
-                int round, RefineState state, Iterable<WeightedPoint> points, int subtaskId) {
-
+                int round, RefineState state, Iterable<WeightedPoint> points, int subtaskId
+        ) {
             double[][] activeCandidates = materialize(state.plan, pool, state.medoids);
             RefinePartial partial = new RefinePartial();
             partial.costs = accumulate(
-                points, state.medoids, activeCandidates, state.plan.clusterBounds, distanceMetric);
+                points, state.medoids, activeCandidates, state.plan.clusterBounds, distanceMetric
+            );
             return partial;
         }
 
@@ -259,12 +259,13 @@ public final class MedoidRefinement {
 
         @Override
         public MedoidIteration.Decision<RefineState> combine(
-                int round, RefineState state, List<RefinePartial> partials) {
-
+                int round, RefineState state, List<RefinePartial> partials
+        ) {
             double[] globalCosts = sumInOrder(partials);
             double[][] activeCandidates = materialize(state.plan, pool, state.medoids);
             Outcome outcome = chooseMedoids(
-                activeCandidates, state.plan.clusterBounds, globalCosts, state.medoids);
+                activeCandidates, state.plan.clusterBounds, globalCosts, state.medoids
+            );
 
             return decide(outcome, state, pool, distanceMetric, maxIterations);
         }
@@ -280,14 +281,16 @@ public final class MedoidRefinement {
         }
     }
 
-    /** The stop/continue rule of a refinement round, shared with the merged {@code pamae} search. */
+    /**
+     * The stop/continue rule of a refinement round.
+     */
     public static MedoidIteration.Decision<RefineState> decide(
             Outcome outcome,
             RefineState state,
             double[][] pool,
             DistanceMetric distanceMetric,
-            int maxIterations) {
-
+            int maxIterations
+    ) {
         boolean improved = outcome.changed && outcome.cost < state.cost;
         RefineState next = new RefineState();
         next.medoids = improved ? outcome.medoids : state.medoids;
@@ -302,14 +305,16 @@ public final class MedoidRefinement {
 
     // ---------------------------------------------------------------------------------------
 
-    /** Finds the candidate index with the lowest cost for a given cluster. */
+    /**
+     * Finds the candidate index with the lowest cost for a given cluster.
+     */
     private static int findBestCandidateForCluster(
             int clusterIndex,
             double[][] activeCandidates,
             int[] clusterBounds,
             double[] candidateCosts,
-            double[][] currentMedoids) {
-
+            double[][] currentMedoids
+    ) {
         int startIdx = clusterBounds[clusterIndex];
         int endIdx = clusterBounds[clusterIndex + 1];
 
@@ -363,16 +368,12 @@ public final class MedoidRefinement {
     }
 
     /**
-     * Samples a uniform candidate pool across the entire dataset, as its own Flink job.
-     *
-     * <p>{@code pamae} does NOT call this — its pool is drawn inside the sampling round of its one
-     * job, off the very pass that draws CLARA's samples, because a separate draw here means a
-     * separate job and therefore a whole extra read of the source. It stays because it is the
-     * pool primitive the refinement specs need to hold a pool fixed across runs.
+     * Samples a uniform candidate pool across the entire dataset.
+     * Evaluated as a separate Flink job; primarily used to establish a fixed pool across independent runs.
      */
     public static DenseVector[] sampleCandidatePool(
-            PointSource source, EnvFactory envFactory, long totalRowCount, int poolSize, long seed) {
-
+            PointSource source, EnvFactory envFactory, long totalRowCount, int poolSize, long seed
+    ) {
         if (poolSize >= totalRowCount) {
             List<WeightedPoint> allPoints = Datasets.collectAll(source, envFactory);
             DenseVector[] pool = new DenseVector[allPoints.size()];
@@ -384,7 +385,8 @@ public final class MedoidRefinement {
 
         double inclusionProb = DriverSample.calculateInclusionProbability(poolSize, totalRowCount);
         List<double[]> drawnSample = DriverSample.executeBernoulliSample(
-            source, envFactory, inclusionProb, seed, "pamae-pool");
+            source, envFactory, inclusionProb, seed, "pamae-pool"
+        );
 
         double[][] selectedCoords = DriverSample.takeRandom(drawnSample, poolSize, seed);
         DenseVector[] pool = new DenseVector[selectedCoords.length];

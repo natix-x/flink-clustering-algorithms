@@ -4,12 +4,11 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 
-/** {@link TypeInformation} for {@link WeightedPoint}, so the stream record gets
- *  {@link WeightedPointSerializer} instead of the reflective POJO serializer or the Kryo fallback.
- *
- *  Mirrors how Flink ML publishes {@code DenseVectorTypeInfo} for its own point type: the record
- *  type of a pipeline should never be left to type extraction, because the fallback silently costs
- *  per-record reflection and, for Kryo, breaks state compatibility. */
+/**
+ * Custom {@link TypeInformation} for {@link WeightedPoint}.
+ * Ensures Flink uses {@link WeightedPointSerializer} instead of falling back
+ * to slower reflective POJO or Kryo serializers.
+ */
 public final class WeightedPointTypeInfo extends TypeInformation<WeightedPoint> {
 
     public static final WeightedPointTypeInfo INSTANCE = new WeightedPointTypeInfo();
@@ -28,10 +27,9 @@ public final class WeightedPointTypeInfo extends TypeInformation<WeightedPoint> 
         return false;
     }
 
-    /** One logical field: the record is treated as an opaque point, never split by position. */
     @Override
     public int getArity() {
-        return 1;
+        return 1; // Treated as a single opaque object
     }
 
     @Override
@@ -44,16 +42,13 @@ public final class WeightedPointTypeInfo extends TypeInformation<WeightedPoint> 
         return WeightedPoint.class;
     }
 
-    /** Not a key type: nothing in the repo keys BY a point (the keyed reduces key by a constant to
-     *  funnel partials into one task), and declaring it comparable would invite a shuffle that no
-     *  algorithm here wants. */
     @Override
     public boolean isKeyType() {
-        return false;
+        return false; // Points are not used as keys; prevents unwanted shuffles
     }
 
     @Override
-    public TypeSerializer<WeightedPoint> createSerializer(ExecutionConfig config) {
+    public TypeSerializer<WeightedPoint> createSerializer(ExecutionConfig executionConfig) {
         return WeightedPointSerializer.INSTANCE;
     }
 
@@ -63,8 +58,8 @@ public final class WeightedPointTypeInfo extends TypeInformation<WeightedPoint> 
     }
 
     @Override
-    public boolean equals(Object other) {
-        return other instanceof WeightedPointTypeInfo;
+    public boolean equals(Object otherObj) {
+        return otherObj instanceof WeightedPointTypeInfo;
     }
 
     @Override
@@ -73,7 +68,7 @@ public final class WeightedPointTypeInfo extends TypeInformation<WeightedPoint> 
     }
 
     @Override
-    public boolean canEqual(Object other) {
-        return other instanceof WeightedPointTypeInfo;
+    public boolean canEqual(Object otherObj) {
+        return otherObj instanceof WeightedPointTypeInfo;
     }
 }

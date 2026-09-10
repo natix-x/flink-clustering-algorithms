@@ -1,72 +1,73 @@
 package clustering.core;
 
-
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamUtils;
 import org.apache.flink.streaming.api.operators.collect.ClientAndIterator;
 import org.apache.flink.util.CloseableIterator;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
-/** Thin wrappers around {@code DataStream} collection. Engine metrics are NOT gathered here
- *  — they are emitted by Flink's metric system to {@code clustering.metrics.FileMetricReporter}
- *  and read back by {@code clustering.benchmark.metrics.MetricsFile}, so no per-job result
- *  capture or REST polling is needed. */
+/**
+ * Utility methods for collecting and consuming records from Flink DataStreams.
+ */
 public final class FlinkJobs {
 
     private FlinkJobs() {}
 
-    /** Drain the full bounded stream into a list. */
+    /**
+     * Drains the entire bounded stream into a list.
+     */
     public static <T> List<T> collectAll(DataStream<T> stream, String jobName) {
         return collectUpTo(stream, jobName, -1);
     }
 
-    /** Drain the full bounded stream, return the LAST element (or null) — for one-value
-     *  reduces and FLIP-176 iterations whose final emitted record is the result. */
+    /**
+     * Drains the stream and returns the last emitted element (or null if empty).
+     */
     public static <T> T last(DataStream<T> stream, String jobName) {
-        List<T> all = collectAll(stream, jobName);
-        return all.isEmpty() ? null : all.get(all.size() - 1);
+        List<T> elements = collectAll(stream, jobName);
+        return elements.isEmpty() ? null : elements.get(elements.size() - 1);
     }
 
-    /** Drain the full bounded stream, handing each record to {@code consumer} AS IT ARRIVES and
-     *  never keeping more than one in the driver's hands.
+    /**
+     * Iteratively consumes the stream as records arrive without loading the full result set
+     * into driver memory. Safe for folding outputs larger than the driver's heap.
      *
-     *  This is what {@code collectAll} cannot do and Spark has no equivalent of: Spark's
-     *  {@code collect} materialises the whole result on the driver, so an unbounded-output job
-     *  (the ε-graph edge scan, whose output is O(edges) and quadratic on a dense graph) has to be
-     *  cut into blocks whose size is guessed in advance. Flink's collect is a back-pressured
-     *  ITERATOR, so the driver can fold a result set far larger than its heap in one job — bounded
-     *  by construction rather than by a size estimate.
-     *
-     *  @return the number of records consumed */
+     * @return the number of consumed records
+     */
     public static <T> long consume(DataStream<T> stream, String jobName, Consumer<T> consumer) {
         try {
-            ClientAndIterator<T> cai = DataStreamUtils.collectWithClient(stream, jobName);
-            long count = 0L;
-            try (CloseableIterator<T> it = cai.iterator) {
-                while (it.hasNext()) {
-                    consumer.accept(it.next());
-                    count++;
+            ClientAndIterator<T> clientAndIterator = DataStreamUtils.collectWithClient(stream, jobName);
+            long consumedCount = 0L;
+
+            try (CloseableIterator<T> iterator = clientAndIterator.iterator) {
+                while (iterator.hasNext()) {
+                    consumer.accept(iterator.next());
+                    consumedCount++;
                 }
             }
-            return count;
+            return consumedCount;
         } catch (Exception e) {
             throw new RuntimeException("Flink job '" + jobName + "' failed", e);
         }
     }
 
-    /** Collect up to {@code limit} records ({@code limit < 0} = unbounded), then close. */
+    /**
+     * Collects up to the specified limit of records. If limit < 0, collects all.
+     */
     public static <T> List<T> collectUpTo(DataStream<T> stream, String jobName, long limit) {
         try {
-            ClientAndIterator<T> cai = DataStreamUtils.collectWithClient(stream, jobName);
-            List<T> out = new ArrayList<>();
-            try (CloseableIterator<T> it = cai.iterator) {
-                while (it.hasNext() && (limit < 0 || out.size() < limit)) {
-                    out.add(it.next());
+            ClientAndIterator<T> clientAndIterator = DataStreamUtils.collectWithClient(stream, jobName);
+            List<T> collectedElements = new ArrayList<>();
+
+            try (CloseableIterator<T> iterator = clientAndIterator.iterator) {
+                while (iterator.hasNext() && (limit < 0 || collectedElements.size() < limit)) {
+                    collectedElements.add(iterator.next());
                 }
             }
-            return out;
+            return collectedElements;
         } catch (Exception e) {
             throw new RuntimeException("Flink job '" + jobName + "' failed", e);
         }

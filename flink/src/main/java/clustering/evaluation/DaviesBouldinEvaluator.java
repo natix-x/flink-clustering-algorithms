@@ -6,26 +6,24 @@ import clustering.core.PointSource;
 import clustering.distance.DistanceMetric;
 import clustering.distance.EuclideanDistance;
 
-/** {@link DaviesBouldinIndex} as a standalone evaluator: computes the moments itself.
- *
- *  The benchmark does NOT go through here — {@link clustering.benchmark.evaluation.EvaluationRunner}
- *  computes {@link ClusterMoments} once and feeds both indices from it, so a run that asks for both
- *  pays the two passes once. This entry point exists for the tests and for one-off use, mirroring
- *  the Spark {@code DaviesBouldinEvaluator}. */
+/**
+ * Evaluates a clustering model using the Davies-Bouldin Index.
+ */
 public final class DaviesBouldinEvaluator implements ClusteringEvaluator {
 
-    private final DistanceMetric distance;
+    private final DistanceMetric distanceMetric;
 
     public DaviesBouldinEvaluator() {
         this(EuclideanDistance.INSTANCE);
     }
 
-    public DaviesBouldinEvaluator(DistanceMetric distance) {
-        this.distance = distance;
+    public DaviesBouldinEvaluator(DistanceMetric distanceMetric) {
+        this.distanceMetric = distanceMetric;
     }
 
     @Override
-    public double evaluate(Model model, PointSource source, EnvFactory envs) {
-        return DaviesBouldinIndex.of(ClusterMoments.compute(model, source, envs, distance), distance);
+    public double evaluate(Model model, PointSource source, EnvFactory envFactory) {
+        ClusterMoments moments = ClusterMoments.compute(model, source, envFactory, distanceMetric);
+        return DaviesBouldinIndex.compute(moments, distanceMetric);
     }
 }

@@ -1,6 +1,6 @@
 package clustering.distance;
 
-/** L2 distance. Singleton, mirrors the Scala {@code object EuclideanDistance}. */
+
 public final class EuclideanDistance implements DistanceMetric {
 
     public static final EuclideanDistance INSTANCE = new EuclideanDistance();

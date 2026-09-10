@@ -119,7 +119,7 @@ public final class SilhouetteEvaluator implements ClusteringEvaluator {
         DataStream<Double> massStream = source.create(env)
             .flatMap((FlatMapFunction<WeightedPoint, Double>) (point, out) -> {
                 if (model.predict(point.features) != NOISE_LABEL) {
-                    double weight = Weights.safe(point.weight);
+                    double weight = Weights.sanitize(point.weight);
                     if (weight > 0.0) {
                         out.collect(weight);
                     }
@@ -169,7 +169,7 @@ public final class SilhouetteEvaluator implements ClusteringEvaluator {
                 return;
             }
 
-            double weight = Weights.safe(point.weight);
+            double weight = Weights.sanitize(point.weight);
             if (weight <= 0.0) {
                 return;
             }
